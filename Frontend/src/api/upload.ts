@@ -2,7 +2,7 @@
 
 // --- FIX: Define the API_BASE_URL constant directly in this file ---
 // This resolves the error because the App component does not export this value.
-const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI server URL
+// const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI server URL
 
 /**
  * Uploads a single Job Description file to the backend.
@@ -13,7 +13,7 @@ export const uploadJdFile = async (file: File) => {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(`${API_BASE_URL}/upload/jd`, {
+  const response = await fetch(`/api/upload/jd`, {
     method: 'POST',
     body: formData,
     credentials: 'include', // Required to send the auth cookie
@@ -47,7 +47,7 @@ export const uploadResumeFiles = async (files: FileList, jdId: string): Promise<
     formData.append('files', files[i]);
   }
 
-  const response = await fetch(`${API_BASE_URL}/upload/resumes`, {
+  const response = await fetch(`/api/upload/resumes`, {
     method: 'POST',
     body: formData,
     credentials: 'include', // Required to send the auth cookie

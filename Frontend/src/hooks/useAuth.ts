@@ -8,7 +8,7 @@ export function useAuth() {
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const response = await fetch('http://localhost:8000/me', {
+        const response = await fetch('/api/me', {
           credentials: 'include',
         });
         if (!response.ok) throw new Error('Not authenticated');

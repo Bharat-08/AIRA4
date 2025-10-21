@@ -1,6 +1,6 @@
 import type { Candidate } from '../types/candidate';
 
-const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI server URL
+// const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI server URL
 
 // --- TYPES for the new asynchronous API responses ---
 interface TaskStartResponse {
@@ -23,7 +23,7 @@ interface TaskStatusResponse {
  * @returns An object containing the task_id for the background job.
  */
 export const startSearchAndRankTask = async (jdId: string, prompt: string): Promise<TaskStartResponse> => {
-  const response = await fetch(`${API_BASE_URL}/search/search`, {
+  const response = await fetch(`/api/search/search`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -58,7 +58,7 @@ export const startApolloSearchTask = async (jdId: string, prompt: string, search
     throw new Error('searchOption must be 1 (Fast) or 2 (Web + Apollo)');
   }
 
-  const response = await fetch(`${API_BASE_URL}/search/apollo-search/${encodeURIComponent(jdId)}`, {
+  const response = await fetch(`/api/search/apollo-search/${encodeURIComponent(jdId)}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -84,7 +84,7 @@ export const startApolloSearchTask = async (jdId: string, prompt: string, search
  * @returns The current status of the task and the final data if completed.
  */
 export const getSearchResults = async (taskId: string): Promise<TaskStatusResponse> => {
-  const response = await fetch(`${API_BASE_URL}/search/search/results/${taskId}`, {
+  const response = await fetch(`/api/search/search/results/${taskId}`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -107,7 +107,7 @@ export const getSearchResults = async (taskId: string): Promise<TaskStatusRespon
  * @returns An object containing the task_id for the background job.
  */
 export const startRankResumesTask = async (jdId: string, prompt: string): Promise<TaskStartResponse> => {
-  const response = await fetch(`${API_BASE_URL}/search/rank-resumes`, {
+  const response = await fetch(`/api/search/rank-resumes`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -130,7 +130,7 @@ export const startRankResumesTask = async (jdId: string, prompt: string): Promis
  * @returns The current status of the task and the final data if completed.
  */
 export const getRankResumesResults = async (taskId: string): Promise<TaskStatusResponse> => {
-  const response = await fetch(`${API_BASE_URL}/search/rank-resumes/results/${taskId}`, {
+  const response = await fetch(`/api/search/rank-resumes/results/${taskId}`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -151,7 +151,7 @@ export const getRankResumesResults = async (taskId: string): Promise<TaskStatusR
  * @param taskId The ID of the task to cancel.
  */
 export const stopTask = async (taskId: string): Promise<{ message: string }> => {
-  const response = await fetch(`${API_BASE_URL}/search/cancel/${taskId}`, {
+  const response = await fetch(`/api/search/cancel/${taskId}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -174,7 +174,7 @@ export const stopTask = async (taskId: string): Promise<{ message: string }> => 
  * @returns An object containing the newly generated profile_url.
  */
 export const generateLinkedInUrl = async (profileId: string): Promise<{ linkedin_url: string }> => {
-  const response = await fetch(`${API_BASE_URL}/search/generate-linkedin-url`, {
+  const response = await fetch(`/api/search/generate-linkedin-url`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -193,7 +193,7 @@ export const generateLinkedInUrl = async (profileId: string): Promise<{ linkedin
 
 // Add this new function
 export const generateLinkedinUrl = async (profileId: string, token: string): Promise<{ linkedin_url: string }> => {
-  const response = await fetch(`${API_BASE_URL}/search/generate-linkedin-url`, {
+  const response = await fetch(`/api/search/generate-linkedin-url`, {
       method: 'POST',
       headers: {
           'Content-Type': 'application/json',
@@ -222,7 +222,7 @@ export const toggleFavorite = async (
   source: 'ranked_candidates' | 'ranked_candidates_from_resume',
   favorite: boolean
 ): Promise<{ candidate_id: string; favorite: boolean }> => {
-  const response = await fetch(`${API_BASE_URL}/favorites/toggle`, {
+  const response = await fetch(`/api/favorites/toggle`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

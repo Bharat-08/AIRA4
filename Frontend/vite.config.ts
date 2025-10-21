@@ -2,7 +2,6 @@
 
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-// Correct v3 Import: Imports directly from 'tailwindcss'
 import tailwindcss from 'tailwindcss'
 
 export default defineConfig({
@@ -12,4 +11,15 @@ export default defineConfig({
       plugins: [tailwindcss()],
     },
   },
+  // --- ADD THIS ENTIRE SECTION ---
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
+  },
+  // ---------------------------------
 })

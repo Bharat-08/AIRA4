@@ -23,7 +23,7 @@ export function Header({ userName, showBackButton = false }: HeaderProps) {
 
   const handleLogout = async () => {
     try {
-      await fetch('http://localhost:8000/auth/logout', {
+      await fetch('api/auth/logout', {
         method: 'POST',
         credentials: 'include',
       });

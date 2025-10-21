@@ -1,7 +1,7 @@
 // src/api/roles.ts
 import type { Role, RoleStatus } from '../types/role';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface JdSummary {
   jd_id: string;
@@ -72,11 +72,19 @@ const mapJdSummaryToRole = (jd: JdSummary): Role => ({
  * Returns raw backend DTO (JdSummary[]).
  */
 export const fetchJdsForUser = async (sort?: string, filter?: string): Promise<JdSummary[]> => {
-  const url = new URL(`${API_BASE_URL}/roles/`);
-  if (sort) url.searchParams.append('sort', sort);
-  if (filter) url.searchParams.append('filter', filter);
+  // --- START: CORRECTED CODE ---
+  let url = `/api/roles/`;
+  const params = new URLSearchParams();
+  if (sort) params.append('sort', sort);
+  if (filter) params.append('filter', filter);
 
-  const res = await fetch(url.toString(), {
+  const queryString = params.toString();
+  if (queryString) {
+    url += `?${queryString}`;
+  }
+  // --- END: CORRECTED CODE ---
+
+  const res = await fetch(url, { // Use the manually built url string
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
@@ -104,7 +112,7 @@ export const createRole = async (file: File): Promise<Role> => {
   const fd = new FormData();
   fd.append('file', file);
 
-  const res = await fetch(`${API_BASE_URL}/roles/`, {
+  const res = await fetch(`/api/roles/`, {
     method: 'POST',
     credentials: 'include',
     body: fd,
@@ -133,7 +141,7 @@ export const getRoles = async (sort?: string, filter?: string): Promise<Role[]> 
  * - Sends a PATCH request and returns the transformed Role.
  */
 export const updateRoleStatus = async (roleId: string, status: RoleStatus): Promise<Role> => {
-  const res = await fetch(`${API_BASE_URL}/roles/${encodeURIComponent(roleId)}/status`, {
+  const res = await fetch(`/api/roles/${encodeURIComponent(roleId)}/status`, {
     method: 'PATCH',
     credentials: 'include',
     headers: {
@@ -154,7 +162,7 @@ export const updateRoleStatus = async (roleId: string, status: RoleStatus): Prom
 
 // --- NEW FUNCTION: To update the editable JD content ---
 export const editRoleContent = async (roleId: string, newContent: string): Promise<Role> => {
-    const res = await fetch(`${API_BASE_URL}/roles/${encodeURIComponent(roleId)}`, {
+    const res = await fetch(`/api/roles/${encodeURIComponent(roleId)}`, {
         method: 'PATCH',
         credentials: 'include',
         headers: {
@@ -175,7 +183,7 @@ export const editRoleContent = async (roleId: string, newContent: string): Promi
 
 // --- NEW FUNCTION: To delete a role ---
 export const deleteRole = async (roleId: string): Promise<void> => {
-    const res = await fetch(`${API_BASE_URL}/roles/${encodeURIComponent(roleId)}`, {
+    const res = await fetch(`/api/roles/${encodeURIComponent(roleId)}`, {
         method: 'DELETE',
         credentials: 'include',
     });
