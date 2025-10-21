@@ -1,0 +1,71 @@
+# recruiter-platform/docker-compose.yml
+
+services:
+  # 1. FastAPI Backend Service
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the application code and necessary files
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      # Ensure your agent files are available inside the container
+      - ./backend/test_searcher.py:/app/test_searcher.py
+      - ./backend/ranker.py:/app/ranker.py
+      - ./backend/my_database.py:/app/my_database.py
+      # Mount the new Apollo searcher so both import paths work
+      - ./backend/searcher_apollo_web.py:/app/searcher_apollo_web.py
+      - ./backend/searcher_apollo_web.py:/app/app/searcher_apollo_web.py
+    command: gunicorn -w 4 -k uvicorn.workers.UvicornWorker --timeout 120 app.main:app --bind 0.0.0.0:8000
+    depends_on:
+      - redis
+
+  # 2. React Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      # Sync local code with the container
+      - ./frontend:/app
+      # Use a named volume for node_modules to improve performance
+      - node_modules:/app/node_modules
+    command: npm run dev -- --host
+    depends_on:
+      - backend
+
+  # 3. Redis Service
+  redis:
+    image: "redis:7-alpine"
+    ports:
+      - "6379:6379"
+
+  # 4. Celery Worker Service
+  worker:
+    build:
+      context: ./backend
+    command: celery -A app.worker worker --loglevel=info
+    volumes:
+      # The worker needs access to the same code as the backend.
+      - ./backend/app:/app/app
+      - ./backend/test_searcher.py:/app/test_searcher.py
+      - ./backend/ranker.py:/app/ranker.py
+      - ./backend/my_database.py:/app/my_database.py
+      # Mount the new Apollo searcher so worker can import from either path
+      - ./backend/searcher_apollo_web.py:/app/searcher_apollo_web.py
+      - ./backend/searcher_apollo_web.py:/app/app/searcher_apollo_web.py
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - redis
+      - backend
+
+# Defines the named volume used by the frontend service
+volumes:
+  node_modules:

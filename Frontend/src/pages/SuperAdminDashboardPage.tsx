@@ -1,0 +1,1 @@
+export const SuperAdminDashboardPage = () => <div className="p-8"><h1>Super Admin Page</h1></div>;

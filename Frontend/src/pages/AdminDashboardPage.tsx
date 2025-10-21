@@ -1,0 +1,1 @@
+export const AdminDashboardPage = () => <div className="p-8"><h1>Organization Admin Page</h1></div>;
