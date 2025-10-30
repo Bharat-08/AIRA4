@@ -44,6 +44,11 @@ class RankedCandidate(Base):
     )
     linkedin_url: Mapped[str] = mapped_column(Text, nullable=True)
 
+    # --- NEW COLUMNS ---
+    contacted: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
+    stage: Mapped[str] = mapped_column(String, server_default="In Consideration", nullable=False)
+    # --- END NEW COLUMNS ---
+
     # Relationships
     user = relationship("User", foreign_keys=[user_id])
     recruiter = relationship("User", foreign_keys=[send_to_recruiter])
@@ -77,6 +82,11 @@ class RankedCandidateFromResume(Base):
         DateTime(timezone=False), server_default=func.now()
     )
     linkedin_url: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # --- NEW COLUMNS ---
+    contacted: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
+    stage: Mapped[str] = mapped_column(String, server_default="In Consideration", nullable=False)
+    # --- END NEW COLUMNS ---
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id])

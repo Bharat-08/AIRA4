@@ -23,6 +23,11 @@ class RankedCandidateBase(BaseModel):
     outreached: bool = False
     linkedin_url: Optional[str] = None
 
+    # --- NEW FIELDS ---
+    contacted: bool = False
+    stage: str = "In Consideration"
+    # --- END NEW FIELDS ---
+
 
 class RankedCandidateCreate(RankedCandidateBase):
     """Schema for creating a ranked candidate entry."""
@@ -39,6 +44,11 @@ class RankedCandidateUpdate(BaseModel):
     send_to_recruiter: Optional[UUID4] = None
     outreached: Optional[bool] = None
     linkedin_url: Optional[str] = None
+
+    # --- NEW FIELDS ---
+    contacted: Optional[bool] = None
+    stage: Optional[str] = None
+    # --- END NEW FIELDS ---
 
 
 class RankedCandidate(RankedCandidateBase):
@@ -68,6 +78,11 @@ class RankedCandidateFromResumeBase(BaseModel):
     outreached: bool = False
     linkedin_url: Optional[str] = None
 
+    # --- NEW FIELDS ---
+    contacted: bool = False
+    stage: str = "In Consideration"
+    # --- END NEW FIELDS ---
+
 
 class RankedCandidateFromResumeCreate(RankedCandidateFromResumeBase):
     """Schema for creating a ranked candidate from a resume."""
@@ -85,6 +100,11 @@ class RankedCandidateFromResumeUpdate(BaseModel):
     outreached: Optional[bool] = None
     linkedin_url: Optional[str] = None
 
+    # --- NEW FIELDS ---
+    contacted: Optional[bool] = None
+    stage: Optional[str] = None
+    # --- END NEW FIELDS ---
+
 
 class RankedCandidateFromResume(RankedCandidateFromResumeBase):
     """Response schema with full details of a ranked candidate from resume."""
@@ -93,3 +113,11 @@ class RankedCandidateFromResume(RankedCandidateFromResumeBase):
 
     class Config:
         orm_mode = True
+
+# --- NEW SCHEMAS FOR UPDATES ---
+class CandidateStageUpdate(BaseModel):
+    stage: str
+
+class CandidateContactedUpdate(BaseModel):
+    contacted: bool
+# --- END NEW SCHEMAS ---

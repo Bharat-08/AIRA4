@@ -5,6 +5,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .routers import auth, health, me, orgs, superadmin, favorites, upload, roles, search
+from app.routers import pipeline
+from app.routers import candidates
 
 app = FastAPI(
     title="Recruiter Platform API",
@@ -42,8 +44,11 @@ app.include_router(orgs.router)
 app.include_router(superadmin.router, prefix="/superadmin", tags=["Super Admin"])
 app.include_router(favorites.router, tags=["Favorites"])
 app.include_router(search.router, prefix="/search", tags=["Search"])
-
-# --- THIS IS THE FIX ---
-# The roles router is now included, activating all its endpoints.
 app.include_router(roles.router, prefix="/roles", tags=["Roles"])
-# --- END OF FIX ---
+app.include_router(pipeline.router)
+
+# --- ADDED CANDIDATE ROUTER ---
+# This line activates the new endpoints in app/routers/candidates.py
+# The prefix="/candidates" and tags=["Candidates"] are already set in that file.
+app.include_router(candidates.router)
+# --- END OF ADD ---

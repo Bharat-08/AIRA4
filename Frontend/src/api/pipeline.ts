@@ -1,111 +1,31 @@
 // src/api/pipeline.ts
-import type { PipelineCandidate } from '../types/candidate';
+// We import the 'Candidate' type which should match the backend schema
+import type { Candidate } from '../types/candidate';
 
-const mockCandidates: PipelineCandidate[] = [
-  {
-    id: '1',
-    name: 'Sophia Rodriguez',
-    role: 'Software Engineer',
-    company: 'TechCorp',
-    status: 'Favourited',
-    stage: 'In Consideration',
-  },
-  {
-    id: '2',
-    name: 'Liam Thompson',
-    role: 'Product Manager',
-    company: 'Innovate Solutions',
-    status: 'Contacted',
-    stage: 'Offer Extended',
-  },
-  {
-    id: '3',
-    name: 'Ava Carter',
-    role: 'Data Scientist',
-    company: 'DataMinds Inc.',
-    status: 'Favourited',
-    stage: 'Rejected',
-  },
-  {
-    id: '4',
-    name: 'Noah Bennett',
-    role: 'UX Designer',
-    company: 'Creative Studio',
-    status: 'Contacted',
-    stage: 'Interviewing',
-  },
-  // --- START: ADDED MOCK CANDIDATES ---
-  {
-    id: '5',
-    name: 'Emma Garcia',
-    role: 'Frontend Developer',
-    company: 'WebWeavers',
-    status: 'Favourited',
-    stage: 'In Consideration',
-  },
-  {
-    id: '6',
-    name: 'Oliver Martinez',
-    role: 'Backend Engineer',
-    company: 'ServerWorks',
-    status: 'Contacted',
-    stage: 'Interviewing',
-  },
-  {
-    id: '7',
-    name: 'Isabella Robinson',
-    role: 'DevOps Engineer',
-    company: 'Cloud Nine',
-    status: 'Contacted',
-    stage: 'Rejected',
-  },
-  {
-    id: '8',
-    name: 'James Clark',
-    role: 'Project Manager',
-    company: 'Innovate Solutions',
-    status: 'Favourited',
-    stage: 'Offer Extended',
-  },
-  {
-    id: '9',
-    name: 'Charlotte Lewis',
-    role: 'QA Engineer',
-    company: 'TechCorp',
-    status: 'Contacted',
-    stage: 'In Consideration',
-  },
-  {
-    id: '10',
-    name: 'Benjamin Walker',
-    role: 'Full Stack Developer',
-    company: 'CodeCrafters',
-    status: 'Favourited',
-    stage: 'Interviewing',
-  },
-  {
-    id: '11',
-    name: 'Mia Hall',
-    role: 'UI Designer',
-    company: 'Creative Studio',
-    status: 'Contacted',
-    stage: 'In Consideration',
-  },
-  {
-    id: '12',
-    name: 'Lucas Allen',
-    role: 'Data Analyst',
-    company: 'DataMinds Inc.',
-    status: 'Favourited',
-    stage: 'Rejected',
-  },
-  // --- END: ADDED MOCK CANDIDATES ---
-];
+/**
+ * Fetches the ranked candidate pipeline for a specific JD.
+ * This data is combined from SQL (ranks) and Supabase (profile info).
+ */
+export const getRankedCandidatesForJd = async (jd_id: string): Promise<Candidate[]> => {
+  // Return empty array if no JD is selected
+  if (!jd_id) {
+    return [];
+  }
 
-export const getPipelineCandidates = (): Promise<PipelineCandidate[]> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(mockCandidates);
-    }, 300); // Simulate network delay
+  const res = await fetch(`/api/pipeline/${encodeURIComponent(jd_id)}`, {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
   });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to fetch pipeline candidates (${res.status})`);
+  }
+
+  const data = await res.json();
+  // The response from the backend (PipelineCandidateResponse)
+  // should match the frontend 'Candidate' type.
+  return data as Candidate[];
 };
