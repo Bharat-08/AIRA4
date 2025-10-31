@@ -5,22 +5,19 @@ import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight } from
 import type { User } from '../types/user';
 
 // --- NEW IMPORTS ---
-import { getRankedCandidatesForJd } from '../api/pipeline';
+import { getRankedCandidatesForJd, updateCandidateStage, updateCandidateFavoriteStatus } from '../api/pipeline';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
 import { candidateStages, type Candidate, type CandidateStage } from '../types/candidate';
 
 // A type for our local state, combining backend data + local UI stage
 type PipelineDisplayCandidate = Candidate & { stage: CandidateStage };
 
-// --- "All Candidates" Row (UPDATED) ---
+// --- "All Candidates" Row ---
 const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => {
-  // Use profile_name
   const avatarInitial = candidate.profile_name?.split(' ').map(n => n[0]).join('').toUpperCase() || '??';
 
   const getStatusDisplay = (candidate: Candidate) => {
-    // Use favorite field
     if (candidate.favorite) return 'Favourited';
-    // Add more statuses as needed
     return 'In Pipeline';
   };
 
@@ -34,12 +31,10 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => 
           {avatarInitial}
         </div>
         <div>
-          {/* Use profile_name, role, company */}
           <p className="font-bold text-slate-800">{candidate.profile_name || 'N/A'}</p>
           <p className="text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</p>
         </div>
       </div>
-      {/* Pass full candidate object */}
       <div className="col-span-2 text-slate-600">{getStatusDisplay(candidate)}</div>
       <div className="col-span-2 text-slate-600">{candidate.role || 'N/A'}</div>
       <div className="col-span-1">
@@ -56,24 +51,22 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => 
   );
 };
 
-// --- "Role Pipeline" Row (UPDATED) ---
+// --- "Role Pipeline" Row (now accepts favorite handler) ---
 const PipelineCandidateRow: React.FC<{
   candidate: PipelineDisplayCandidate;
   onStageChange: (id: string, newStage: CandidateStage) => void;
-}> = ({ candidate, onStageChange }) => {
-  // Use profile_name
+  onFavoriteToggle: (profileId: string) => void;
+}> = ({ candidate, onStageChange, onFavoriteToggle }) => {
   const avatarInitial = candidate.profile_name?.split(' ').map(n => n[0]).join('').toUpperCase() || '??';
-  
+
   const getStatusText = (candidate: Candidate) => {
     return candidate.favorite ? 'Favourited' : 'In Pipeline';
   };
+
   const getStatusTextClass = (candidate: Candidate) => {
-    // Use favorite field
-    switch (candidate.favorite) {
-      case true: return 'text-yellow-600 font-semibold';
-      default: return 'text-gray-600';
-    }
+    return candidate.favorite ? 'text-yellow-600 font-semibold' : 'text-gray-600';
   };
+
   return (
     <div className="grid grid-cols-12 items-center py-3 px-2 border-b border-slate-100 text-sm hover:bg-slate-50">
       <div className="col-span-1 flex justify-center">
@@ -84,29 +77,45 @@ const PipelineCandidateRow: React.FC<{
           {avatarInitial}
         </div>
         <div>
-          {/* Use profile_name, role, company */}
           <p className="font-bold text-slate-800">{candidate.profile_name || 'N/A'}</p>
           <p className="text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</p>
         </div>
       </div>
+
       <div className="col-span-2">
         <span className={`text-xs ${getStatusTextClass(candidate)}`}>{getStatusText(candidate)}</span>
       </div>
+
       <div className="col-span-1">
-        <a href={candidate.linkedin_url || '#'} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-teal-600"><Link size={18} /></a>
+        <a href={candidate.linkedin_url || '#'} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-teal-600">
+          <Link size={18} />
+        </a>
       </div>
+
       <div className="col-span-2">
         <select
           value={candidate.stage}
-          // Use profile_id
           onChange={(e) => onStageChange(candidate.profile_id, e.target.value as CandidateStage)}
           className="w-full p-1.5 border-none rounded-md bg-slate-100 text-slate-700 text-xs focus:ring-2 focus:ring-teal-500 appearance-none text-left"
         >
           {candidateStages.map(stage => (<option key={stage} value={stage}>{stage}</option>))}
         </select>
       </div>
+
       <div className="col-span-2 flex items-center gap-4 text-slate-400">
-        <button className="hover:text-yellow-500"><Star size={18} /></button>
+        {/* Favorite star */}
+        <button
+          onClick={() => onFavoriteToggle(candidate.profile_id)}
+          aria-label={candidate.favorite ? 'Unfavorite candidate' : 'Favorite candidate'}
+          className="p-1"
+          title={candidate.favorite ? 'Unfavorite' : 'Favorite'}
+        >
+          <Star
+            size={18}
+            className={`transition-colors ${candidate.favorite ? 'text-yellow-500 fill-yellow-500' : 'text-gray-400 hover:text-gray-600'}`}
+          />
+        </button>
+
         <button className="hover:text-blue-500"><Send size={18} /></button>
         <button className="hover:text-green-500"><Phone size={18} /></button>
         <button className="hover:text-red-500"><Trash2 size={18} /></button>
@@ -118,14 +127,12 @@ const PipelineCandidateRow: React.FC<{
 export const PipelinePage = ({ user }: { user: User }) => {
   const location = useLocation();
   const [activeTab, setActiveTab] = useState<'rolePipeline' | 'allCandidates'>(location.state?.defaultTab || 'rolePipeline');
-  
-  // --- UPDATED STATE ---
   const [candidates, setCandidates] = useState<PipelineDisplayCandidate[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [userJds, setUserJds] = useState<JdSummary[]>([]);
   const [selectedJdId, setSelectedJdId] = useState<string>('');
 
-  // --- NEW useEffect to load JDs and initial candidates ---
+  // Load JDs and candidates
   useEffect(() => {
     const loadJdsAndCandidates = async () => {
       setIsLoading(true);
@@ -136,12 +143,11 @@ export const PipelinePage = ({ user }: { user: User }) => {
         if (jds.length > 0) {
           const defaultJdId = jds[0].jd_id;
           setSelectedJdId(defaultJdId);
-          
+
           const fetchedCandidates = await getRankedCandidatesForJd(defaultJdId);
-          // Map to the display type, adding default stage
           setCandidates(fetchedCandidates.map(c => ({
             ...c,
-            stage: 'In Consideration' // Default stage
+            stage: (c.stage as CandidateStage) || 'In Consideration',
           })));
         }
       } catch (error) {
@@ -151,9 +157,9 @@ export const PipelinePage = ({ user }: { user: User }) => {
       }
     };
     loadJdsAndCandidates();
-  }, []); // Runs once on mount
-  
-  // --- NEW HANDLER for JD dropdown change ---
+  }, []);
+
+  // JD selection change
   const handleJdSelectionChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newJdId = e.target.value;
     setSelectedJdId(newJdId);
@@ -168,7 +174,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
       const fetchedCandidates = await getRankedCandidatesForJd(newJdId);
       setCandidates(fetchedCandidates.map(c => ({
         ...c,
-        stage: 'In Consideration' // Default stage
+        stage: (c.stage as CandidateStage) || 'In Consideration',
       })));
     } catch (error) {
       console.error("Failed to fetch candidates for JD", newJdId, error);
@@ -178,15 +184,49 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   };
 
-  // --- UPDATED HANDLER for stage change ---
-  const handleStageChange = (id: string, newStage: CandidateStage) => {
-    // id is now profile_id
-    setCandidates(prevCandidates => 
-      prevCandidates.map(candidate => 
-        candidate.profile_id === id ? { ...candidate, stage: newStage } : candidate
-      )
+  // Stage change (calls backend)
+  const handleStageChange = async (id: string, newStage: CandidateStage) => {
+    // optimistic UI update
+    setCandidates(prev =>
+      prev.map(c => c.profile_id === id ? { ...c, stage: newStage } : c)
     );
+
+    try {
+      const candidate = candidates.find(c => c.profile_id === id);
+      if (!candidate?.rank_id) return;
+      await updateCandidateStage(candidate.rank_id, newStage);
+      console.log(`Stage updated successfully for ${id}`);
+    } catch (error) {
+      console.error('Failed to update stage:', error);
+      // optionally revert: refetch or restore previous state
+    }
   };
+
+  // Favorite toggle (uses existing backend API)
+  // Favorite toggle (uses existing backend API)
+const handleFavoriteToggle = async (profileId: string) => {
+  // find candidate by profile_id
+  const candidate = candidates.find(c => c.profile_id === profileId);
+  if (!candidate) return;
+
+  const oldFavorite = candidate.favorite;
+  const newFavorite = !oldFavorite;
+
+  // Optimistic UI update
+  setCandidates(prev => prev.map(c => c.profile_id === profileId ? { ...c, favorite: newFavorite } : c));
+
+  try {
+    // IMPORTANT: the favorites endpoint expects the candidate_id to be the profile_id
+    // (not the ranked_candidates.rank_id). So pass profile_id and source 'ranked_candidates'.
+    await updateCandidateFavoriteStatus(profileId, newFavorite);
+    console.log(`Favorite toggled for ${profileId}: ${newFavorite}`);
+  } catch (err) {
+    console.error('Failed to toggle favorite:', err);
+    // Roll back optimistic change on failure
+    setCandidates(prev => prev.map(c => c.profile_id === profileId ? { ...c, favorite: oldFavorite } : c));
+  }
+};
+
 
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 font-sans">
@@ -202,7 +242,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
           {activeTab === 'rolePipeline' ? (
              <>
                <div className="mb-6">
-                 {/* --- UPDATED DROPDOWN --- */}
                  <select 
                    value={selectedJdId}
                    onChange={handleJdSelectionChange}
@@ -229,7 +268,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                  <button className="px-3 py-1.5 rounded-md bg-slate-100 font-semibold text-slate-800">All</button>
                  <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Favourited (5)</button>
                  <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Contacted (5)</button>
-
                  <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100 flex items-center gap-1">Stage <ChevronDown size={16}/></button>
                </div>
                <div className="candidates-table">
@@ -237,7 +275,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                    <div className="col-span-1"></div><div className="col-span-4">Name</div><div className="col-span-2">Status</div><div className="col-span-1">Profile Link</div><div className="col-span-2">Stage</div><div className="col-span-2">Actions</div>
                  </div>
                  <div className="max-h-[60vh] overflow-y-auto">
-                   {/* --- UPDATED .map() --- */}
                    {isLoading ? (<p className="text-center py-8 text-slate-500">Loading candidates...</p>) : (
                      candidates.length === 0 ? (
                        <p className="text-center py-8 text-slate-500">No candidates found for this role.</p>
@@ -247,6 +284,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
                            key={candidate.profile_id} 
                            candidate={candidate} 
                            onStageChange={handleStageChange}
+                           onFavoriteToggle={handleFavoriteToggle}
                          />
                        ))
                      )
@@ -290,7 +328,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                   <div className="col-span-2">Actions</div>
                 </div>
                 <div className="max-h-[60vh] overflow-y-auto">
-                  {/* --- UPDATED .map() --- */}
                   {isLoading ? (<p className="text-center py-8 text-slate-500">Loading candidates...</p>) : (
                     candidates.length === 0 ? (
                       <p className="text-center py-8 text-slate-500">No candidates found for this role.</p>

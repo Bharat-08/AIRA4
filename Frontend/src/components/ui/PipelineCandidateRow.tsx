@@ -1,83 +1,162 @@
-// src/components/ui/PipelineCandidateRow.tsx
-import { Link, Star, Send, Phone, Trash2 } from 'lucide-react';
+// Frontend/src/components/ui/PipelineCandidateRow.tsx
 import React from 'react';
-// MODIFIED: Imported new types
-import type { PipelineCandidate, CandidateStage } from '../../types/candidate';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Star, Linkedin } from 'lucide-react';
+import type { Candidate, CandidateStage } from '../../types/candidate';
 import { candidateStages } from '../../types/candidate';
-
+import {
+  updateCandidateStage,
+  updateCandidateFavoriteStatus,
+} from '../../api/pipeline';
 
 interface PipelineCandidateRowProps {
-  candidate: PipelineCandidate;
-  // ADDED: Prop to handle stage changes
-  onStageChange: (id: string, newStage: CandidateStage) => void;
+  candidate: Candidate;
+  jdId?: string; // optional: used to invalidate the pipeline query if present
 }
 
-// A helper to determine badge color based on status
-const getStatusBadgeClass = (status: PipelineCandidate['status']) => {
-  switch (status) {
-    case 'Favourited':
-      return 'bg-yellow-100 text-yellow-800';
-    case 'Contacted':
-      return 'bg-blue-100 text-blue-800';
-    default:
-      return 'bg-gray-100 text-gray-800';
-  }
-};
+export const PipelineCandidateRow: React.FC<PipelineCandidateRowProps> = ({
+  candidate,
+  jdId = '',
+}) => {
+  const queryClient = useQueryClient();
 
-export function PipelineCandidateRow({ candidate, onStageChange }: PipelineCandidateRowProps) {
-  const avatarInitial = candidate.name.split(' ').map(n => n[0]).join('');
+  const { mutate: mutateStage, isPending: isUpdatingStage } = useMutation({
+    mutationFn: ({ rankId, stage }: { rankId: string; stage: string }) =>
+      updateCandidateStage(rankId, stage),
+    onSuccess: () => {
+      if (jdId) {
+        queryClient.invalidateQueries({ queryKey: ['pipelineForJD', jdId] });
+      }
+    },
+    onError: (err: unknown) => {
+      console.error('Failed to update candidate stage', err);
+    },
+  });
 
-  const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    onStageChange(candidate.id, e.target.value as CandidateStage);
+  const { mutate: mutateFavorite, isPending: isTogglingFavorite } = useMutation({
+    mutationFn: ({ rankId, favorite }: { rankId: string; favorite: boolean }) =>
+      updateCandidateFavoriteStatus(rankId, favorite),
+    onSuccess: () => {
+      if (jdId) {
+        queryClient.invalidateQueries({ queryKey: ['pipelineForJD', jdId] });
+      }
+    },
+    onError: (err: unknown) => {
+      console.error('Failed to toggle favorite', err);
+    },
+  });
+
+  const handleStageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newStage = e.target.value as CandidateStage;
+    if (!candidate.rank_id) {
+      console.error('Missing rank_id for candidate, cannot update stage');
+      return;
+    }
+    mutateStage({ rankId: candidate.rank_id, stage: newStage });
   };
 
+  const handleFavoriteToggle = () => {
+    if (!candidate.rank_id) {
+      console.error('Missing rank_id for candidate, cannot toggle favorite');
+      return;
+    }
+    mutateFavorite({ rankId: candidate.rank_id, favorite: !candidate.favorite });
+  };
+
+  const avatarInitial =
+    (candidate.profile_name || 'N/A')
+      .split(' ')
+      .map((n) => n[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase() || '??';
+
   return (
-    <div className="grid grid-cols-12 items-center py-3 border-b border-slate-100 text-sm">
-      <div className="col-span-1 flex justify-center">
-        <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" />
-      </div>
+    <tr className="border-b border-gray-200 hover:bg-gray-50">
+      {/* Name + Favorite */}
+      <td className="p-4">
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={handleFavoriteToggle}
+            aria-label={candidate.favorite ? 'Remove from favorites' : 'Add to favorites'}
+            className="p-0"
+            disabled={isTogglingFavorite}
+            title={candidate.favorite ? 'Favorited' : 'Add to favorites'}
+          >
+            <Star
+              size={18}
+              className={`transition-colors ${candidate.favorite ? 'text-yellow-500 fill-yellow-500' : 'text-gray-400 hover:text-gray-600'}`}
+            />
+          </button>
 
-      <div className="col-span-4 flex items-center gap-3">
-        <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-200 text-slate-600 rounded-full font-semibold text-xs">
-          {avatarInitial}
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs">
+              {avatarInitial}
+            </div>
+            <div>
+              <div className="font-medium text-sm text-slate-800">{candidate.profile_name || 'N/A'}</div>
+              <div className="text-xs text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</div>
+            </div>
+          </div>
         </div>
-        <div>
-          <p className="font-semibold text-slate-800">{candidate.name}</p>
-          <p className="text-slate-500">{`${candidate.role} at ${candidate.company}`}</p>
-        </div>
-      </div>
+      </td>
 
-      <div className="col-span-2">
-        <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusBadgeClass(candidate.status)}`}>
-          {candidate.status}
+      {/* Status */}
+      <td className="p-4">
+        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+          candidate.contacted ? 'bg-blue-100 text-blue-800' : candidate.favorite ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'
+        }`}>
+          {candidate.contacted ? 'Contacted' : candidate.favorite ? 'Favourited' : 'In Pipeline'}
         </span>
-      </div>
+      </td>
 
-      <div className="col-span-1">
-        <a href="#" className="text-slate-500 hover:text-teal-600">
-            <Link size={18} />
-        </a>
-      </div>
-
-      {/* MODIFIED: This is now an interactive dropdown */}
-      <div className="col-span-2">
+      {/* Stage Dropdown */}
+      <td className="p-4">
         <select
-          value={candidate.stage}
-          onChange={handleSelectChange}
-          className="w-full p-1 border-gray-300 rounded-md bg-slate-100 text-slate-700 text-sm focus:ring-2 focus:ring-teal-500 text-left"
+          value={candidate.stage || 'In Consideration'}
+          onChange={handleStageChange}
+          disabled={isUpdatingStage}
+          aria-label={`Stage (current: ${candidate.stage || 'In Consideration'})`}
+          className="border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-70 disabled:bg-gray-100"
         >
-          {candidateStages.map(stage => (
-            <option key={stage} value={stage}>{stage}</option>
+          {candidateStages.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
           ))}
         </select>
-      </div>
+      </td>
 
-      <div className="col-span-2 flex items-center gap-4 text-slate-500">
-        <button className="hover:text-yellow-500"><Star size={18} /></button>
-        <button className="hover:text-blue-500"><Send size={18} /></button>
-        <button className="hover:text-green-500"><Phone size={18} /></button>
-        <button className="hover:text-red-500"><Trash2 size={18} /></button>
-      </div>
-    </div>
+      {/* Match Score */}
+      <td className="p-4 text-sm text-gray-700">
+        {typeof candidate.match_score === 'number' && !Number.isNaN(candidate.match_score)
+          ? `${Number(candidate.match_score).toFixed(1)}%`
+          : 'N/A'}
+      </td>
+
+      {/* Recommended / Placeholder */}
+      <td className="p-4 text-sm text-gray-700">-</td>
+
+      {/* LinkedIn */}
+      <td className="p-4">
+        {candidate.linkedin_url ? (
+          <a
+            href={candidate.linkedin_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 hover:text-blue-800"
+            aria-label={`View ${candidate.profile_name || 'candidate'}'s LinkedIn`}
+          >
+            <Linkedin size={18} />
+          </a>
+        ) : (
+          <span className="text-gray-400">
+            <Linkedin size={18} />
+          </span>
+        )}
+      </td>
+    </tr>
   );
-}
+};
+
+export default PipelineCandidateRow;
