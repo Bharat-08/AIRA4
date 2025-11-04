@@ -354,3 +354,57 @@ Return a single JSON object only with the schema:
         results = await self.process_batches(candidates, jd)
         logger.info(f"[DBRanker] Finished database ranking workflow for JD {jd_id}. Processed {len(results)} resumes.")
         return results
+
+    # ----------------------------
+    # NEW: Efficient single-resume runner
+    # ----------------------------
+    async def run_single(self, jd_id: str, resume_id: str) -> Optional[Dict]:
+        """
+        Efficient runner to rank a single resume by resume_id.
+        - Fetches the resume row from 'resume' table
+        - Calls process_single on the single candidate
+        - Returns the dict result or None on failure
+        """
+        logger.info(f"[DBRanker] run_single start for jd={jd_id} resume_id={resume_id}")
+
+        def fetch_resume():
+            return self.supabase.table("resume").select(
+                "resume_id,jd_id,user_id,json_content,person_name,role,company,profile_url"
+            ).eq("resume_id", resume_id).single().execute()
+
+        resume_resp = await self._supabase_execute(fetch_resume)
+        resume_row = getattr(resume_resp, "data", None)
+        if not resume_row:
+            logger.error(f"[DBRanker] No resume found with id {resume_id}")
+            return None
+
+        # normalize candidate dict for process_single
+        candidate = {
+            "resume_id": resume_row.get("resume_id"),
+            "json_content": resume_row.get("json_content"),
+            "person_name": resume_row.get("person_name"),
+            "role": resume_row.get("role"),
+            "company": resume_row.get("company"),
+            "profile_url": resume_row.get("profile_url"),
+        }
+
+        # fetch JD summary minimally
+        def fetch_jd():
+            return self.supabase.table("jds").select("jd_id,jd_parsed_summary").eq("jd_id", jd_id).single().execute()
+
+        jd_resp = await self._supabase_execute(fetch_jd)
+        jd = getattr(jd_resp, "data", None)
+        if not jd:
+            logger.error(f"[DBRanker] JD {jd_id} not found for run_single")
+            return None
+
+        # Process single candidate
+        try:
+            res = await self.process_single(candidate, jd)
+            logger.info(f"[DBRanker] run_single result for resume {resume_id}: {res}")
+            return res
+        except Exception as e:
+            logger.exception(f"[DBRanker] run_single failed: {e}")
+            # Insert an error row to indicate failure
+            await self._insert_error_row(candidate, jd, str(e))
+            return None

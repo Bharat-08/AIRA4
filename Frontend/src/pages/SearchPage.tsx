@@ -1,3 +1,5 @@
+// frontend/src/pages/SearchPage.tsx
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Header } from '../components/layout/Header';
 import { CandidateRow } from '../components/ui/CandidateRow';
@@ -17,6 +19,9 @@ import {
   toggleFavorite,
   // NEW: helper to call the new apollo-search endpoint (will be added to frontend/src/api/search.ts next)
   startApolloSearchTask,
+  // NEW functions for the combined flow
+  triggerCombinedSearch,
+  getCombinedSearchResults,
 } from '../api/search';
 
 import type { Candidate } from '../types/candidate';
@@ -66,6 +71,12 @@ export function SearchPage({ user }: { user: User }) {
   const [taskId, setTaskId] = useState<string | null>(null);
   const pollingIntervalRef = useRef<number | null>(null);
 
+  // NEW: For combined polling (apollo task id and 'since' timestamp)
+  const [isCombinedSearch, setIsCombinedSearch] = useState(false);
+  const combinedApolloTaskIdRef = useRef<string | null>(null);
+  const combinedSinceRef = useRef<string | null>(null);
+  const combinedPollingIntervalRef = useRef<number | null>(null);
+
   const jdInputRef = useRef<HTMLInputElement>(null);
   const resumeInputRef = useRef<HTMLInputElement>(null);
 
@@ -77,6 +88,12 @@ export function SearchPage({ user }: { user: User }) {
     const maybeId = (user as unknown as { id?: string })?.id;
     return `search_candidates_v1::${maybeId ?? user.name ?? 'anon'}`;
   }, [user]);
+
+  // ---- NEW: Polling/timeouts constants and refs ----
+  const TASK_POLLING_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+  const TASK_POLL_INTERVAL_MS = 5000; // 5s
+  const COMBINED_OVERALL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes for combined flow
+  const taskStartedAtRef = useRef<number | null>(null);
 
   // Persist candidates + jd_id into sessionStorage whenever they change
   useEffect(() => {
@@ -248,8 +265,85 @@ export function SearchPage({ user }: { user: User }) {
     setUploadStatus(null);
     setHasSearched(true);
 
+    // Record search start time for polling (UTC ISO)
+    const search_start_time = new Date().toISOString();
+
     try {
+      // If user has selected multiple resume files — preserve the old "Upload & rank" flow
+      // to handle multiple files (same as My Database behavior).
+      if (resumeFiles && resumeFiles.length > 1) {
+        // Upload all resumes and then start the ranking pipeline for DB resumes
+        await uploadResumeFiles(resumeFiles, currentJd.jd_id);
+        setResumeFiles(null);
+        if (resumeInputRef.current) resumeInputRef.current.value = "";
+        setUploadStatus({ message: 'Resumes uploaded. Starting ranking...', type: 'success' });
+
+        // If user selected My Database sourcing option, start DB rank flow
+        if (sourcingOption === 'db') {
+          const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
+          const newTaskId =
+            (res as any)?.task_id ??
+            (res as any)?.taskId ??
+            (res as any)?.id ??
+            null;
+          if (!newTaskId) throw new Error('Failed to start ranking task.');
+          setTaskId(newTaskId);
+          taskStartedAtRef.current = Date.now();
+          setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
+        } else {
+          // WEB search path - start Apollo search (no file attached this time)
+          const res = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
+          const newTaskId =
+            (res as any)?.task_id ??
+            (res as any)?.taskId ??
+            (res as any)?.id ??
+            null;
+          if (!newTaskId) throw new Error('Failed to start search task.');
+          // start combined polling behavior (no resume file attached to combined endpoint)
+          combinedApolloTaskIdRef.current = newTaskId;
+          combinedSinceRef.current = search_start_time;
+          taskStartedAtRef.current = Date.now();
+          setIsCombinedSearch(true);
+          setUploadStatus({ message: 'Search task started. Checking for results...', type: 'success' });
+        }
+        setIsRankingLoading(false); // the polling will drive the "loading" indicator if needed
+        return;
+      }
+
+      // If exactly one resume file is provided and user picked WEB sourcing,
+      // call the combined endpoint that accepts a single file plus search options.
+      if (sourcingOption === 'web' && resumeFiles && resumeFiles.length === 1) {
+        const file = resumeFiles[0];
+        const res = await triggerCombinedSearch(currentJd.jd_id, chatMessage || '', webSearchOption, file);
+        // Expecting res to contain at least apollo_task_id
+        const apolloTaskId =
+          (res as any)?.apollo_task_id ??
+          (res as any)?.apolloTaskId ??
+          (res as any)?.task_id ??
+          null;
+
+        if (!apolloTaskId) {
+          // If backend didn't return apollo_task_id, fall back to starting apollo search separately
+          const fallback = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
+          combinedApolloTaskIdRef.current = fallback.task_id;
+        } else {
+          combinedApolloTaskIdRef.current = apolloTaskId;
+        }
+
+        // store 'since' and flip combined flag — start polling loop
+        combinedSinceRef.current = search_start_time;
+        taskStartedAtRef.current = Date.now();
+        setIsCombinedSearch(true);
+        setResumeFiles(null);
+        if (resumeInputRef.current) resumeInputRef.current.value = "";
+        setUploadStatus({ message: 'Combined search started. Polling for incremental & final results...', type: 'success' });
+        // keep isRankingLoading true — poller will stop it
+        return;
+      }
+
+      // default existing behavior:
       if (resumeFiles && resumeFiles.length > 0) {
+        // If we're here, resumeFiles.length === 1 but sourcingOption !== 'web' OR other fallback cases
         await uploadResumeFiles(resumeFiles, currentJd.jd_id);
         setResumeFiles(null);
         if (resumeInputRef.current) resumeInputRef.current.value = "";
@@ -266,6 +360,7 @@ export function SearchPage({ user }: { user: User }) {
           null;
         if (!newTaskId) throw new Error('Failed to start ranking task.');
         setTaskId(newTaskId);
+        taskStartedAtRef.current = Date.now();
         setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
       } else {
         // WEB search path: call the new apollo-search API so we can pass search_option
@@ -277,7 +372,9 @@ export function SearchPage({ user }: { user: User }) {
           (res as any)?.id ??
           null;
         if (!newTaskId) throw new Error('Failed to start search task.');
+        // Use existing taskId-based polling for the regular (no-file) path
         setTaskId(newTaskId);
+        taskStartedAtRef.current = Date.now();
         setUploadStatus({ message: 'Search task started. Checking for results...', type: 'success' });
       }
     } catch (error) {
@@ -288,19 +385,139 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // --- useEffect for polling ---
+  // --- useEffect for polling (enhanced to support combined-search polling) ---
   useEffect(() => {
-    const clearPolling = () => {
-      if (pollingIntervalRef.current !== null) {
+    const clearPolling = (ref: React.MutableRefObject<number | null> | null = null) => {
+      if (ref && ref.current !== null) {
+        clearInterval(ref.current);
+        ref.current = null;
+      } else if (pollingIntervalRef.current !== null) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
       }
     };
 
+    // If combined-search is active, run the combined polling loop
+    if (isCombinedSearch) {
+      // Ensure we have an apollo task id to watch; if not, we'll poll combined-results until timeout
+      const apolloTaskId = combinedApolloTaskIdRef.current;
+      const since = combinedSinceRef.current;
+      if (!since) {
+        // nothing to do — defensive
+        setIsCombinedSearch(false);
+        setIsRankingLoading(false);
+        return;
+      }
+
+      const overallTimeoutMs = COMBINED_OVERALL_TIMEOUT_MS;
+      const pollIntervalMs = TASK_POLL_INTERVAL_MS;
+      const startedAt = Date.now();
+
+      const poller = async () => {
+        try {
+          // 1) incremental combined results
+          const combined = await getCombinedSearchResults(currentJd!.jd_id, since);
+          if (Array.isArray(combined)) {
+            setCandidates(combined);
+            // optimistic status update
+            setUploadStatus({ message: `Found and ranked ${combined.length} candidates (partial).`, type: 'success' });
+          }
+
+          // 2) check apollo status if we have one
+          let apolloDone = false;
+          if (apolloTaskId) {
+            try {
+              const statusResp: any = await getSearchResults(apolloTaskId);
+              const statusLower = (statusResp?.status || '').toString().toLowerCase();
+              if (statusLower === 'completed' || statusLower === 'done' || statusLower === 'success') {
+                apolloDone = true;
+              } else if (statusLower === 'failed' || statusLower === 'error') {
+                apolloDone = true; // treat failure as done to perform final fetch and stop polling
+                setUploadStatus({ message: statusResp?.error || 'Search task failed.', type: 'error' });
+              }
+            } catch (err) {
+              // non-fatal; continue polling
+              console.debug('Apollo task status poll error', err);
+            }
+          }
+
+          // stop conditions
+          if (apolloDone || (Date.now() - startedAt) > overallTimeoutMs) {
+            // final fetch
+            const final = await getCombinedSearchResults(currentJd!.jd_id, since);
+            if (Array.isArray(final)) {
+              setCandidates(final);
+              setUploadStatus({ message: `Found and ranked ${final.length} total candidates!`, type: 'success' });
+            } else {
+              setUploadStatus({ message: 'No final candidates found.', type: 'error' });
+            }
+
+            // cleanup
+            setIsCombinedSearch(false);
+            setIsRankingLoading(false);
+            combinedApolloTaskIdRef.current = null;
+            combinedSinceRef.current = null;
+            if (combinedPollingIntervalRef.current !== null) {
+              clearInterval(combinedPollingIntervalRef.current);
+              combinedPollingIntervalRef.current = null;
+            }
+            taskStartedAtRef.current = null;
+          }
+        } catch (err) {
+          console.warn('Error while polling combined results', err);
+          // keep polling — but consider stopping after a longer retry count
+          if ((Date.now() - startedAt) > overallTimeoutMs) {
+            setIsCombinedSearch(false);
+            setIsRankingLoading(false);
+            setUploadStatus({ message: 'Polling timed out.', type: 'error' });
+            if (combinedPollingIntervalRef.current !== null) {
+              clearInterval(combinedPollingIntervalRef.current);
+              combinedPollingIntervalRef.current = null;
+            }
+            taskStartedAtRef.current = null;
+          }
+        }
+      };
+
+      // run immediately then set interval
+      poller();
+      combinedPollingIntervalRef.current = window.setInterval(poller, pollIntervalMs);
+
+      // cleanup when effect re-runs or unmounts
+      return () => {
+        if (combinedPollingIntervalRef.current !== null) {
+          clearInterval(combinedPollingIntervalRef.current);
+          combinedPollingIntervalRef.current = null;
+        }
+      };
+    }
+
+    // --- taskId-based polling with timeout ---
     if (!taskId) return;
+
+    if (!taskStartedAtRef.current) {
+      taskStartedAtRef.current = Date.now();
+    }
 
     const pollOnce = async () => {
       try {
+        // enforce client-side timeout
+        const started = taskStartedAtRef.current ?? Date.now();
+        if (Date.now() - started > TASK_POLLING_TIMEOUT_MS) {
+          // Timeout reached — stop polling and report timeout to user
+          if (pollingIntervalRef.current !== null) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+          setIsRankingLoading(false);
+          setTaskId(null);
+          taskStartedAtRef.current = null;
+          setUploadStatus({ message: 'Polling timed out after 15 minutes.', type: 'error' });
+          // attempt to cancel server task
+          try { await stopTask(taskId); } catch (e) { /* ignore */ }
+          return;
+        }
+
         let resp: any = null;
         if (sourcingOption === 'db') {
           resp = await getRankResumesResults(taskId);
@@ -315,31 +532,52 @@ export function SearchPage({ user }: { user: User }) {
           setUploadStatus({ message: `Found and ranked ${results.length} total candidates!`, type: 'success' });
           setIsRankingLoading(false);
           setTaskId(null);
-          clearPolling();
+          taskStartedAtRef.current = null;
+          if (pollingIntervalRef.current !== null) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
         } else if (status === 'failed' || status === 'error') {
           const message = resp?.error || resp?.message || 'Task failed.';
           setUploadStatus({ message, type: 'error' });
           setIsRankingLoading(false);
           setTaskId(null);
-          clearPolling();
+          taskStartedAtRef.current = null;
+          if (pollingIntervalRef.current !== null) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+        } else {
+          // still processing
         }
       } catch (error) {
         setUploadStatus({ message: (error as Error).message || 'Error while fetching task status.', type: 'error' });
         setIsRankingLoading(false);
         setTaskId(null);
-        clearPolling();
+        taskStartedAtRef.current = null;
+        if (pollingIntervalRef.current !== null) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
       }
     };
 
+    // run immediately then schedule
     pollOnce();
-    pollingIntervalRef.current = window.setInterval(pollOnce, 5000);
+    pollingIntervalRef.current = window.setInterval(pollOnce, TASK_POLL_INTERVAL_MS);
 
-    return () => clearPolling();
-  }, [taskId, sourcingOption]);
+    return () => {
+      if (pollingIntervalRef.current !== null) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, [taskId, sourcingOption, isCombinedSearch, currentJd]);
 
   // --- handleStopSearch ---
   const handleStopSearch = async () => {
     try {
+      // Stop any task by id (existing behavior)
       if (taskId) {
         try {
           await stopTask(taskId);
@@ -347,11 +585,32 @@ export function SearchPage({ user }: { user: User }) {
           console.warn('stopTask error', err);
         }
       }
+
+      // If combined polling is active, just cancel it and try to cancel the apollo task too
+      if (isCombinedSearch) {
+        const apolloTaskId = combinedApolloTaskIdRef.current;
+        if (apolloTaskId) {
+          try {
+            await stopTask(apolloTaskId);
+          } catch (err) {
+            console.warn('stopTask (apollo) error', err);
+          }
+        }
+        if (combinedPollingIntervalRef.current !== null) {
+          clearInterval(combinedPollingIntervalRef.current);
+          combinedPollingIntervalRef.current = null;
+        }
+        combinedApolloTaskIdRef.current = null;
+        combinedSinceRef.current = null;
+        setIsCombinedSearch(false);
+      }
+
       if (pollingIntervalRef.current !== null) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
       }
       setTaskId(null);
+      taskStartedAtRef.current = null;
       setUploadStatus({ message: 'Search has been stopped.', type: 'success' });
     } catch (error) {
       setUploadStatus({ message: (error as Error).message, type: 'error' });

@@ -1,18 +1,24 @@
+# backend/app/routers/search.py
 import logging
+import uuid
 from typing import Any, Dict, List, Iterable, Optional
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+# SQL helper
+from sqlalchemy import text
+
 # --- START: CELERY IMPORTS ---
-# These are the necessary components to interact with your background tasks
 from celery.result import AsyncResult
 from app.worker import (
     celery_app,
     search_and_rank_pipeline_task,
     rank_resumes_task,
-    apollo_search_task,  # NEW: apollo search task
+    apollo_search_task,
+    process_single_uploaded_resume_task,  # NEW: background task to handle a single uploaded resume
 )
 # --- END: CELERY IMPORTS ---
 
@@ -40,7 +46,7 @@ class ApolloSearchRequest(BaseModel):
     """
     Request body for the /apollo-search/{jd_id} endpoint.
     search_option: 1 -> apollo_only (fast), 2 -> apollo_and_web (comprehensive)
-    prompt: optional custom prompt / requirements string
+    prompt: Optional custom prompt / requirements string
     """
     search_option: int
     prompt: Optional[str] = None
@@ -52,11 +58,6 @@ linkedin_finder_agent = LinkedInFinder()
 
 
 def _extract_id_values(candidates: Iterable[Any], id_key_candidates: List[str]) -> List[str]:
-    """
-    Utility to extract id strings from a list of candidate items.
-    id_key_candidates: list of possible keys/attrs to try (e.g. ['profile_id', 'id'])
-    Supports both dict-like and object-like candidate items.
-    """
     out = []
     for c in candidates:
         val = None
@@ -66,7 +67,6 @@ def _extract_id_values(candidates: Iterable[Any], id_key_candidates: List[str]) 
                     val = str(c[k])
                     break
         else:
-            # object-like
             for k in id_key_candidates:
                 if hasattr(c, k) and getattr(c, k) is not None:
                     val = str(getattr(c, k))
@@ -106,12 +106,9 @@ def enrich_with_favorites(db: Session, candidates: Iterable[Any]) -> List[Dict]:
         else:
             # convert object to dict by pulling attributes commonly used
             item = {}
-            # attempt to include common fields if present
             for attr in ("profile_id", "resume_id", "profile_name", "name", "role", "company", "match_score", "strengths", "linkedin_url"):
                 if hasattr(c, attr):
                     item[attr] = getattr(c, attr)
-
-            # include any extra attributes by trying __dict__ if available
             if hasattr(c, "__dict__"):
                 try:
                     for k, v in c.__dict__.items():
@@ -133,18 +130,13 @@ def enrich_with_favorites(db: Session, candidates: Iterable[Any]) -> List[Dict]:
     return enriched
 
 
-# --- NEW ASYNCHRONOUS ENDPOINTS ---
+# --- EXISTING ENDPOINTS (unchanged) ---
 
 @router.post("/search", status_code=status.HTTP_202_ACCEPTED)
 async def start_search_and_rank(
     request: SearchRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Starts the full search and rank pipeline as a background task.
-    This endpoint is now non-blocking and returns a task ID immediately.
-    All the heavy lifting is now done by the 'search_and_rank_pipeline_task' in worker.py.
-    """
     user_id = str(current_user.id)
     task = search_and_rank_pipeline_task.delay(
         jd_id=request.jd_id,
@@ -160,14 +152,6 @@ async def start_apollo_search(
     body: ApolloSearchRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Starts an Apollo-backed search (Fast or Web+Apollo) as a background Celery job.
-    Frontend sends `search_option` (1 or 2) and optional `prompt`.
-
-    Mapping:
-      1 -> "apollo_only"        (Fast search)
-      2 -> "apollo_and_web"     (Web search + Apollo)
-    """
     user_id = str(current_user.id)
     option = body.search_option
     prompt = body.prompt or ""
@@ -191,12 +175,6 @@ async def start_apollo_search(
 
 @router.get("/search/results/{task_id}")
 async def get_search_results(task_id: str, db: Session = Depends(get_db)):
-    """
-    Polls for the results of the main search and rank pipeline. The frontend
-    will call this endpoint to check if the background job is complete.
-    This endpoint now enriches returned candidate objects with their `favorite` status
-    from the ranked_candidates / ranked_candidates_from_resume tables.
-    """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
         return {"status": "processing"}
@@ -208,13 +186,11 @@ async def get_search_results(task_id: str, db: Session = Depends(get_db)):
             content={"status": "failed", "error": payload.get("error", str(task_result.info))}
         )
 
-    # payload is expected to be a dict with 'status' and 'result' keys (result is iterable)
     result_items = payload.get("result") or payload.get("results") or payload.get("data") or []
     try:
         enriched = enrich_with_favorites(db, result_items)
     except Exception as e:
         logger.exception("Failed to enrich search results with favorites: %s", e)
-        # fallback to returning original results but ensure they include favorite=False
         enriched = []
         for r in result_items:
             if isinstance(r, dict):
@@ -232,10 +208,6 @@ async def start_rank_resumes(
     request: SearchRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Starts the resume ranking process as a background task.
-    The logic for this is now handled by the 'rank_resumes_task' in worker.py.
-    """
     user_id = str(current_user.id)
     task = rank_resumes_task.delay(jd_id=request.jd_id, user_id=user_id)
     return {"task_id": task.id, "status": "processing"}
@@ -243,9 +215,6 @@ async def start_rank_resumes(
 
 @router.get("/rank-resumes/results/{task_id}")
 async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
-    """
-    Polls for the results of the resume ranking task and enriches results with favorites.
-    """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
         return {"status": "processing"}
@@ -274,13 +243,190 @@ async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
     return {"status": payload.get("status", "completed"), "data": enriched}
 
 
+# --- NEW ENDPOINT: Combined Search (start tasks) ---
+@router.post("/combined-search", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_combined_search(
+    jd_id: str = Form(...),
+    prompt: Optional[str] = Form(None),
+    search_option: int = Form(2),
+    file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Starts an Apollo/web search plus optionally processes a single uploaded resume.
+    This endpoint should return immediately with HTTP 202. It enqueues:
+      - apollo_search_task.delay(...)
+      - process_single_uploaded_resume_task.delay(...)  (only if a file was provided)
+    """
+    user_id = str(current_user.id)
+    launched = {}
+    try:
+        # Map search_option to search_mode string
+        if search_option == 1:
+            search_mode_str = "apollo_only"
+        elif search_option == 2:
+            search_mode_str = "apollo_and_web"
+        else:
+            raise HTTPException(status_code=400, detail="search_option must be 1 or 2")
+
+        # Launch the apollo search task
+        apollo_task = apollo_search_task.delay(
+            jd_id=jd_id,
+            custom_prompt=prompt or "",
+            user_id=user_id,
+            search_mode=search_mode_str
+        )
+        launched["apollo_task_id"] = apollo_task.id
+
+        # If a file was provided, read bytes and enqueue the resume processing task
+        if file is not None:
+            try:
+                file_bytes = await file.read()
+                resume_task = process_single_uploaded_resume_task.delay(
+                    jd_id=jd_id,
+                    file_contents=file_bytes,
+                    user_id=user_id
+                )
+                launched["resume_task_id"] = resume_task.id
+            except Exception as fe:
+                logger.exception("Failed to enqueue resume processing task: %s", fe)
+                # Return 500 because we couldn't enqueue the resume task after accepting the request
+                raise HTTPException(status_code=500, detail=f"Failed to enqueue resume processing task: {fe}")
+
+        return {"status": "processing", **launched}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to start combined search tasks: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- NEW ENDPOINT: Combined Results (polling) ---
+@router.get("/combined-results")
+async def get_combined_results(
+    jd_id: str = Query(..., description="JD id to fetch results for"),
+    since: datetime = Query(..., description="ISO datetime; return candidates created after this timestamp"),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns combined results from both ranked_candidates (web) and ranked_candidates_from_resume (uploaded resumes)
+    where created_at > since. Results are enriched with favorite flags and sorted by match_score desc.
+    """
+    try:
+        # Convert jd_id to UUID if possible for proper comparison
+        try:
+            jd_uuid = uuid.UUID(str(jd_id))
+        except Exception:
+            jd_uuid = jd_id  # fallback - SQLAlchemy may accept string for comparison depending on driver
+
+        # Query web results
+        web_q = db.query(RankedCandidate).filter(RankedCandidate.jd_id == jd_uuid, RankedCandidate.created_at > since).all()
+        web_items = []
+        for r in (web_q or []):
+            # Try to find a human-readable name in the 'search' table via profile_id
+            profile_name = None
+            try:
+                if getattr(r, "profile_id", None) is not None:
+                    q = text("SELECT profile_name FROM search WHERE profile_id = :pid LIMIT 1")
+                    res = db.execute(q, {"pid": str(r.profile_id)}).fetchone()
+                    if res:
+                        # res may be a tuple or Row; take first value
+                        profile_name = res[0] if isinstance(res, (list, tuple)) else res.get("profile_name", None)
+            except Exception:
+                profile_name = None
+
+            item = {
+                "rank_id": str(r.rank_id) if getattr(r, "rank_id", None) is not None else None,
+                "user_id": str(r.user_id) if getattr(r, "user_id", None) is not None else None,
+                "jd_id": str(r.jd_id) if getattr(r, "jd_id", None) is not None else None,
+                "profile_id": str(r.profile_id) if getattr(r, "profile_id", None) is not None else None,
+                "profile_name": profile_name,
+                "rank": r.rank,
+                "match_score": float(r.match_score) if getattr(r, "match_score", None) is not None else None,
+                "strengths": r.strengths,
+                "favorite": bool(r.favorite),
+                "save_for_future": bool(r.save_for_future),
+                "send_to_recruiter": str(r.send_to_recruiter) if getattr(r, "send_to_recruiter", None) is not None else None,
+                "outreached": bool(r.outreached),
+                "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) is not None else None,
+                "linkedin_url": r.linkedin_url,
+                "contacted": bool(r.contacted),
+                "stage": r.stage,
+                "source": "web"
+            }
+            web_items.append(item)
+
+        # Query resume-based results
+        resume_q = db.query(RankedCandidateFromResume).filter(RankedCandidateFromResume.jd_id == jd_uuid, RankedCandidateFromResume.created_at > since).all()
+        resume_items = []
+        for r in (resume_q or []):
+            # Try to find person_name in 'resume' table via resume_id
+            person_name = None
+            try:
+                if getattr(r, "resume_id", None) is not None:
+                    q = text("SELECT person_name FROM resume WHERE resume_id = :rid LIMIT 1")
+                    res = db.execute(q, {"rid": str(r.resume_id)}).fetchone()
+                    if res:
+                        person_name = res[0] if isinstance(res, (list, tuple)) else res.get("person_name", None)
+            except Exception:
+                person_name = None
+
+            item = {
+                "rank_id": str(r.rank_id) if getattr(r, "rank_id", None) is not None else None,
+                "user_id": str(r.user_id) if getattr(r, "user_id", None) is not None else None,
+                "jd_id": str(r.jd_id) if getattr(r, "jd_id", None) is not None else None,
+                "resume_id": str(r.resume_id) if getattr(r, "resume_id", None) is not None else None,
+                "profile_name": person_name,
+                "rank": r.rank,
+                "match_score": float(r.match_score) if getattr(r, "match_score", None) is not None else None,
+                "strengths": r.strengths,
+                "favorite": bool(r.favorite),
+                "save_for_future": bool(r.save_for_future),
+                "send_to_recruiter": str(r.send_to_recruiter) if getattr(r, "send_to_recruiter", None) is not None else None,
+                "outreached": bool(r.outreached),
+                "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) is not None else None,
+                "linkedin_url": r.linkedin_url,
+                "contacted": bool(r.contacted),
+                "stage": r.stage,
+                "source": "resume"
+            }
+            resume_items.append(item)
+
+        combined = web_items + resume_items
+
+        # Enrich combined items with favorites again (defensive - enrich_with_favorites expects ORM or dicts)
+        try:
+            enriched = enrich_with_favorites(db, combined)
+        except Exception as e:
+            logger.exception("Failed to enrich combined results: %s", e)
+            # fallback: ensure favorite exists as boolean
+            enriched = []
+            for it in combined:
+                it = dict(it)
+                it.setdefault("favorite", False)
+                enriched.append(it)
+
+        # Sort by match_score descending (handle None safely: treat None as very low)
+        def score_val(x):
+            ms = x.get("match_score")
+            try:
+                return float(ms) if ms is not None else -9999.0
+            except Exception:
+                return -9999.0
+
+        enriched_sorted = sorted(enriched, key=score_val, reverse=True)
+
+        return enriched_sorted
+
+    except Exception as e:
+        logger.exception("Error while fetching combined results: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- PRESERVED ENDPOINTS (Functionality Unchanged) ---
 
 @router.post("/cancel/{task_id}")
 async def cancel_task(task_id: str, current_user: User = Depends(get_current_user)):
-    """
-    Cancels a running Celery task using its built-in revoke feature.
-    """
     celery_app.control.revoke(task_id, terminate=True)
     logger.info(f"Cancellation request for task: {task_id} by user: {current_user.id}")
     return {"message": "Task cancellation requested."}
@@ -291,9 +437,6 @@ async def generate_linkedin_url(
     request: LinkedInRequest,
     supabase: Client = Depends(get_supabase_client)
 ):
-    """
-    Generates a LinkedIn URL for a specific candidate. (Unchanged).
-    """
     try:
         generated_url = linkedin_finder_agent.find_and_update_url(
             profile_id=request.profile_id,

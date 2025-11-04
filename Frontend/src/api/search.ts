@@ -1,8 +1,9 @@
+// frontend/src/api/search.ts
 import type { Candidate } from '../types/candidate';
 
 // const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI server URL
 
-// --- TYPES for the new asynchronous API responses ---
+// --- TYPES for the asynchronous API responses ---
 interface TaskStartResponse {
   task_id: string;
   status: 'processing';
@@ -42,7 +43,7 @@ export const startSearchAndRankTask = async (jdId: string, prompt: string): Prom
 
 /**
  * Starts the Apollo-backed search (Fast or Web+Apollo) on the backend.
- * Calls the new endpoint: POST /search/apollo-search/{jd_id}
+ * Calls the endpoint: POST /api/search/apollo-search/{jd_id}
  *
  * @param jdId The ID of the job description.
  * @param prompt Optional prompt string (may be empty).
@@ -144,6 +145,81 @@ export const getRankResumesResults = async (taskId: string): Promise<TaskStatusR
 };
 
 
+// --- NEW: Combined Search (web + optional single resume) ---
+
+/**
+ * Triggers the combined search endpoint which will:
+ *  - start the apollo/web search task
+ *  - optionally upload a single resume and start processing it
+ * Returns the task ids (apollo_task_id, resume_task_id) for backend tasks.
+ *
+ * @param jdId string
+ * @param prompt string | null
+ * @param searchOption number (1 or 2)
+ * @param file File | null  -> single resume file (if provided)
+ */
+export const triggerCombinedSearch = async (
+  jdId: string,
+  prompt: string | null,
+  searchOption: number,
+  file: File | null
+): Promise<{ apollo_task_id: string; resume_task_id?: string | null } & { status: string }> => {
+  // build multipart/form-data
+  const form = new FormData();
+  form.append('jd_id', jdId);
+  form.append('search_option', String(searchOption || 2));
+  if (prompt) form.append('prompt', prompt);
+  if (file) {
+    // backend expects 'file' as the field name
+    form.append('file', file, file.name);
+  }
+
+  const response = await fetch(`/api/search/combined-search`, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Failed to trigger combined search' }));
+    throw new Error(errorData.detail || 'Failed to trigger combined search');
+  }
+
+  return response.json();
+};
+
+/**
+ * Poll the combined-results endpoint using a timestamp.
+ * The 'since' param should be an ISO string (UTC) representing when the search started.
+ *
+ * @param jdId string
+ * @param since ISO datetime string (e.g. new Date().toISOString())
+ * @returns An array of Candidate objects (may be empty)
+ */
+export const getCombinedSearchResults = async (jdId: string, since: string): Promise<Candidate[]> => {
+  // encode the timestamp safely
+  const url = new URL(`/api/search/combined-results`, window.location.origin);
+  url.searchParams.set('jd_id', jdId);
+  url.searchParams.set('since', since);
+
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    // try to parse the response for better error messages
+    const err = await response.json().catch(() => ({ detail: 'Failed to fetch combined results' }));
+    throw new Error(err.detail || 'Failed to fetch combined results');
+  }
+
+  // The backend returns a JSON array (list) of candidate-like objects
+  const data = await response.json();
+  // Assume the array items already include 'favorite' (enrich_with_favorites done server-side)
+  return data as Candidate[];
+};
+
+
 // --- UTILITY FUNCTIONS (Cancellation and LinkedIn URL) ---
 
 /**
@@ -191,7 +267,7 @@ export const generateLinkedInUrl = async (profileId: string): Promise<{ linkedin
   return response.json();
 };
 
-// Add this new function
+// Add this new function (legacy / alternative signature)
 export const generateLinkedinUrl = async (profileId: string, token: string): Promise<{ linkedin_url: string }> => {
   const response = await fetch(`/api/search/generate-linkedin-url`, {
       method: 'POST',
