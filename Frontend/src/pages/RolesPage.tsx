@@ -226,11 +226,12 @@ export default function RolesPage() {
                   </div>
                 )}
                 <RoleDetails
-                  role={selectedRole}
-                  onUpdateStatus={(newStatus) => handleUpdateStatus(selectedRole.id, newStatus)}
-                  onUpdateContent={handleUpdateRoleContent}
-                  startEditing={Boolean(openEditorForRoleId && selectedRole?.id === openEditorForRoleId)}
-                />
+  role={selectedRole}
+  onUpdateStatus={(newStatus) => handleUpdateStatus(selectedRole.id, newStatus)}
+  onUpdateContent={handleUpdateRoleContent}
+  startEditing={Boolean(openEditorForRoleId && selectedRole?.id === openEditorForRoleId)}
+  onDelete={handleDeleteRequest}
+/>
               </>
             ) : (
               <div className="text-center text-slate-500">{user ? 'No roles found. Select "New Role" to begin.' : 'Please log in to view roles.'}</div>

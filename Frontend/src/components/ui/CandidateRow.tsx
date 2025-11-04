@@ -7,6 +7,7 @@ import {
   Phone,
   Loader2,
   Linkedin,
+  Bookmark,
 } from "lucide-react";
 import type { Candidate } from "../../types/candidate";
 import { generateLinkedInUrl } from "../../api/search";
@@ -49,6 +50,8 @@ export function CandidateRow({
 
   // favorited state (optimistic UI)
   const [isFav, setIsFav] = useState<boolean>(!!candidate.favorite);
+  // saved/bookmark state (optimistic UI)
+  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).saved);
 
   const avatarInitial = candidate.profile_name
     ? candidate.profile_name
@@ -210,6 +213,24 @@ export function CandidateRow({
     }
   };
 
+  // Save / bookmark toggle handler (optimistic)
+  const handleSaveClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const newSaved = !isSaved;
+    setIsSaved(newSaved);
+
+    try {
+      // notify parent so it can persist saved state (if desired)
+      onUpdateCandidate({ ...(candidate as any), saved: newSaved } as Candidate);
+    } catch (err) {
+      // no-op rollback would require parent confirmation; keep optimistic for now
+      setIsSaved(!newSaved);
+      console.warn("Failed to update saved state locally", err);
+    }
+  };
+
   return (
     <>
       <div className="grid grid-cols-12 items-center py-3 border-b border-gray-200 text-sm">
@@ -260,8 +281,18 @@ export function CandidateRow({
           {renderLinkedInButton()}
         </div>
 
-        {/* Actions (star, send/message arrow -> opens RecommendPopup, phone -> opens CallSchedulePopup) */}
+        {/* Actions (bookmark/save, star, send/message arrow -> opens RecommendPopup, phone -> opens CallSchedulePopup) */}
         <div className="col-span-1 flex items-center gap-3 text-gray-500 justify-end">
+          {/* SAVE / BOOKMARK */}
+          <button
+            onClick={handleSaveClick}
+            title={isSaved ? "Unsave" : "Save"}
+            aria-pressed={isSaved}
+            className="p-1 rounded hover:bg-slate-100 transition-colors"
+          >
+            <Bookmark size={18} className={isSaved ? "text-blue-600" : "text-gray-400"} />
+          </button>
+
           <button
             onClick={handleFavoriteClick}
             title={isFav ? "Unfavorite" : "Favorite"}

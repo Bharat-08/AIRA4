@@ -27,6 +27,7 @@ const getTimeAgo = (dateString: string): string => {
 };
 
 const RoleListItem: React.FC<RoleListItemProps> = ({ role, isSelected, onClick, onDelete }) => {
+  // delete handler kept for API; UI deletion now triggered from details area.
   const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     onDelete(role.id);
@@ -47,13 +48,13 @@ const RoleListItem: React.FC<RoleListItemProps> = ({ role, isSelected, onClick, 
           {role.location}
         </p>
       </div>
+
+      {/* Right side shows time only. Delete moved to RoleDetails area as requested. */}
       <div className="flex items-center">
         <span className={`text-xs pt-0.5 whitespace-nowrap pl-3 ${isSelected ? 'text-teal-600 font-medium' : 'text-slate-400'}`}>
           {getTimeAgo(role.created_at)}
         </span>
-        <button onClick={handleDeleteClick} className="ml-2 text-slate-400 hover:text-red-500">
-            <Trash2 size={16} />
-        </button>
+        {/* NOTE: delete UI removed from list item. Keep handler available if needed. */}
       </div>
     </div>
   );

@@ -1,23 +1,15 @@
 // src/components/ui/AllCandidatesRow.tsx
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { Candidate } from '../../types/candidate';
-import { Link, Trash2, Send, CornerUpRight, Star } from 'lucide-react';
+import { Link, Trash2, Send, CornerUpRight, Star, Bookmark } from 'lucide-react';
 
 interface AllCandidatesRowProps {
   candidate: Candidate;
-  /**
-   * Called when user toggles favorite.
-   * signature: (candidateId, source, newFavorite) => Promise<void> | void
-   */
   onToggleFavorite?: (
     candidateId: string,
     source: 'ranked_candidates' | 'ranked_candidates_from_resume',
     favorite: boolean
   ) => void;
-  /**
-   * Which backend table this row corresponds to. Default is ranked_candidates.
-   * If your list comes from resume uploads use 'ranked_candidates_from_resume'.
-   */
   source?: 'ranked_candidates' | 'ranked_candidates_from_resume';
 }
 
@@ -39,8 +31,14 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
   onToggleFavorite,
   source = 'ranked_candidates',
 }) => {
-  // Use local state for immediate UI responsiveness (optimistic)
+  // debug log to ensure file loaded
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[AllCandidatesRow] mounted for candidate:', candidate?.profile_id || candidate?.profile_name);
+  }, [candidate]);
+
   const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
+  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).saved);
 
   const avatarInitial = (candidate.profile_name || (candidate as any).name || '')
     .split(' ')
@@ -53,7 +51,6 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
     e.stopPropagation();
 
     const newVal = !isFav;
-    // optimistic update
     setIsFav(newVal);
 
     try {
@@ -61,10 +58,18 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
         await onToggleFavorite(candidate.profile_id || (candidate as any).resume_id, source, newVal);
       }
     } catch (err) {
-      // rollback on error
       setIsFav(!newVal);
+      // eslint-disable-next-line no-console
       console.warn('Failed to toggle favorite', err);
     }
+  };
+
+  const handleSaveClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsSaved((prev) => !prev);
+    // eslint-disable-next-line no-console
+    console.log('[AllCandidatesRow] save toggled', candidate?.profile_id, !isSaved);
   };
 
   return (
@@ -96,26 +101,72 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
       </div>
 
       <div className="col-span-1">
-        <a href={candidate.profile_url || candidate.linkedin_url || '#'} className="text-slate-400 hover:text-teal-600" target="_blank" rel="noreferrer">
+        <a
+          href={candidate.profile_url || candidate.linkedin_url || '#'}
+          className="text-slate-400 hover:text-teal-600"
+          target="_blank"
+          rel="noreferrer"
+        >
           <Link size={18} />
         </a>
       </div>
 
-      <div className="col-span-3 flex items-center gap-4 text-slate-400 justify-end">
+      {/* ACTIONS COLUMN */}
+      <div className="col-span-4 flex items-center gap-6 text-slate-400 justify-end pr-2 min-w-[200px]">
+        {/* DEBUG visible Save pill — extremely visible, red background */}
+        <button
+          data-qa="action-save"
+          onClick={handleSaveClick}
+          title={isSaved ? 'Unsave Candidate' : 'Save Candidate'}
+          className="px-3 py-1 rounded-md bg-red-500 text-white text-sm font-semibold hover:bg-red-600"
+        >
+          SAVE
+        </button>
+
+        {/* Bookmark icon (also present) */}
+        <button
+          data-qa="action-bookmark"
+          onClick={handleSaveClick}
+          title={isSaved ? 'Unsave Candidate' : 'Save Candidate'}
+          className="p-2 rounded hover:bg-slate-100 transition-colors"
+          aria-pressed={isSaved}
+        >
+          <Bookmark
+            size={20}
+            strokeWidth={1.6}
+            className={isSaved ? 'text-blue-600' : 'text-slate-400'}
+          />
+        </button>
+
         {/* Favorite / Star */}
         <button
+          data-qa="action-fav"
           onClick={handleFavoriteClick}
           aria-pressed={isFav}
           title={isFav ? 'Unfavorite' : 'Favorite'}
-          className="p-1 rounded hover:bg-slate-100 transition-colors"
+          className="p-2 rounded hover:bg-slate-100 transition-colors"
         >
-          {/* Use stroke color change to indicate state; lucide star is outline but will look good */}
-          <Star size={18} className={isFav ? 'text-yellow-400' : 'text-slate-400'} />
+          <Star
+            size={20}
+            strokeWidth={1.6}
+            className={isFav ? 'text-yellow-400' : 'text-slate-400'}
+          />
         </button>
 
-        <button className="hover:text-red-500" title="Delete"><Trash2 size={18} /></button>
-        <button className="hover:text-blue-500" title="Send"><Send size={18} /></button>
-        <button className="hover:text-green-500" title="Open"><CornerUpRight size={18} /></button>
+        {/* Delete */}
+        <button data-qa="action-delete" className="p-2 rounded hover:bg-slate-100 transition-colors" title="Delete">
+          <Trash2 size={18} />
+        </button>
+
+        {/* Send */}
+        <button data-qa="action-send" className="p-2 rounded hover:bg-slate-100 transition-colors" title="Send">
+          <Send size={18} />
+        </button>
+
+        {/* Open / Call */}
+        <button data-qa="action-open" className="p-2 rounded hover:bg-slate-100 transition-colors" title="Open">
+          <CornerUpRight size={18} />
+        </button>
       </div>
     </div>
   );

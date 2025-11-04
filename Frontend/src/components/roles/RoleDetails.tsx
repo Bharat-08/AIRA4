@@ -1,18 +1,19 @@
-// Frontend/src/components/roles/RoleDetails.tsx
 import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Role, RoleStatus } from '../../types/role';
-import { ChevronDown, Edit3, Save, X } from 'lucide-react';
+// CHANGED: Removed Trash2, it's not needed
+import { ChevronDown, Edit3, Save, X } from 'lucide-react'; 
 import { editRoleContent } from '../../api/roles';
 
 interface RoleDetailsProps {
   role: Role;
   onUpdateStatus: (status: RoleStatus) => void;
-  onUpdateContent: (updatedRole: Role) => void; 
+  onUpdateContent: (updatedRole: Role) => void;
   startEditing?: boolean;
+  onDelete?: (roleId: string) => void; // parent should provide delete handler
 }
 
-const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdateContent, startEditing }) => {
+const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdateContent, startEditing, onDelete }) => {
   const navigate = useNavigate();
 
   const [isEditing, setIsEditing] = useState(false);
@@ -50,7 +51,6 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
     setIsSaving(true);
     try {
       const updatedRole = await editRoleContent(role.id, editedContent);
-      // updatedRole is the mapped Role object from api/roles.ts
       onUpdateContent(updatedRole); 
       setIsEditing(false);
     } catch (error) {
@@ -83,6 +83,11 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
     }
   };
 
+  const handleDeleteClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onDelete) onDelete(role.id);
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className="pb-5 border-b border-slate-100 mb-6">
@@ -96,32 +101,47 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
                     Created on {formatDate(role.created_at)}
                 </p>
             </div>
-            <div className="relative inline-block text-left">
-                <button 
-                    type="button" 
-                    onClick={() => setIsStatusDropdownOpen(prev => !prev)}
-                    className={`inline-flex w-full justify-center items-center gap-x-1.5 rounded-md px-3 py-2 text-sm font-semibold shadow-sm ring-1 ring-inset ring-slate-300 ${getStatusStyles(role.status)}`}
-                >
-                    {role.status.charAt(0).toUpperCase() + role.status.slice(1)}
-                    <ChevronDown className="-mr-1 h-5 w-5 text-slate-400" />
-                </button>
 
-                <div className={`absolute right-0 z-10 mt-2 w-40 origin-top-right rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none transition-all duration-200 ${isStatusDropdownOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
-                    <div className="py-1">
-                        {(['open', 'close', 'deprioritized'] as RoleStatus[]).map((status) => (
-                            <button
-                                key={status}
-                                onClick={() => {
-                                    onUpdateStatus(status);
-                                    setIsStatusDropdownOpen(false); // Close after selection
-                                }}
-                                className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
-                            >
-                                {status.charAt(0).toUpperCase() + status.slice(1)}
-                            </button>
-                        ))}
+            {/* status dropdown + delete button */}
+            {/* CHANGED: Added 'flex-shrink-0' to prevent this div from shrinking and causing an overlap */}
+            <div className="flex-shrink-0 flex items-start gap-2">
+                <div className="relative inline-block text-left">
+                    <button 
+                        type="button" 
+                        onClick={() => setIsStatusDropdownOpen(prev => !prev)}
+                        aria-expanded={isStatusDropdownOpen}
+                        className={`inline-flex justify-center items-center gap-x-1.5 rounded-md px-3 py-2 text-sm font-semibold shadow-sm ring-1 ring-inset ring-slate-300 ${getStatusStyles(role.status)}`}
+                    >
+                        {role.status.charAt(0).toUpperCase() + role.status.slice(1)}
+                        <ChevronDown className="-mr-1 h-5 w-5 text-slate-400" />
+                    </button>
+
+                    <div className={`absolute right-0 z-10 mt-2 w-40 origin-top-right rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none transition-all duration-200 ${isStatusDropdownOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
+                        <div className="py-1">
+                            {(['open', 'close', 'deprioritized'] as RoleStatus[]).map((status) => (
+                                <button
+                                    key={status}
+                                    onClick={() => {
+                                        onUpdateStatus(status);
+                                        setIsStatusDropdownOpen(false);
+                                    }}
+                                    className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                                >
+                                    {status.charAt(0).toUpperCase() + status.slice(1)}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 </div>
+
+                {/* Red Delete button (no icon) - This is the style you wanted */}
+                <button
+                  onClick={handleDeleteClick}
+                  className="inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-semibold bg-red-600 text-white hover:bg-red-700"
+                  aria-label={`Delete role ${role.title}`}
+                >
+                  Delete
+                </button>
             </div>
         </div>
       </div>
