@@ -11,25 +11,18 @@ import {
 } from "lucide-react";
 import type { Candidate } from "../../types/candidate";
 import { generateLinkedInUrl } from "../../api/search";
-import CallSchedulePopup from "./CallSchedulePopup"; // adjust path if needed
-import RecommendPopup from "./RecommendPopup"; // adjust path if needed
+import CallSchedulePopup from "./CallSchedulePopup";
+import RecommendPopup from "./RecommendPopup";
 
 interface CandidateRowProps {
   candidate: Candidate;
   onUpdateCandidate: (updatedCandidate: Candidate) => void;
   onNameClick: (candidate: Candidate) => void;
-  /**
-   * Optional toggle handler injected from SearchPage.
-   * signature: (candidateId, source, newFavorite) => Promise<void> | void
-   */
   onToggleFavorite?: (
     candidateId: string,
     source: "ranked_candidates" | "ranked_candidates_from_resume",
     favorite: boolean
   ) => Promise<void> | void;
-  /**
-   * Which backend table this row corresponds to. Default is ranked_candidates.
-   */
   source?: "ranked_candidates" | "ranked_candidates_from_resume";
 }
 
@@ -48,43 +41,82 @@ export function CandidateRow({
   const [isCallPopupOpen, setIsCallPopupOpen] = useState(false);
   const [isRecommendPopupOpen, setIsRecommendPopupOpen] = useState(false);
 
-  // favorited state (optimistic UI)
-  const [isFav, setIsFav] = useState<boolean>(!!candidate.favorite);
-  // saved/bookmark state (optimistic UI)
+  // optimistic UI states
+  const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
   const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).saved);
 
-  const avatarInitial = candidate.profile_name
-    ? candidate.profile_name
-        .split(" ")
-        .map((n) => (n ? n[0] : ""))
-        .join("")
-        .toUpperCase()
-    : "C";
+  // ---- Robust display fields (covers all shapes coming from web + resume pipelines) ----
+  const displayName =
+    (candidate as any).profile_name ||
+    (candidate as any).person_name ||
+    (candidate as any).name ||
+    (candidate as any).full_name ||
+    "—";
+
+  const displayRole =
+    (candidate as any).role ||
+    (candidate as any).current_title ||
+    (candidate as any).title ||
+    "—";
+
+  const displayCompany =
+    (candidate as any).company ||
+    (candidate as any).current_company ||
+    (candidate as any).organization_name ||
+    (candidate as any).organization ||
+    "—";
+
+  const profileId =
+    (candidate as any).profile_id ||
+    (candidate as any).resume_id ||
+    (candidate as any).id ||
+    "";
+
+  const profileUrl =
+    (candidate as any).profile_url ||
+    (candidate as any).validated_url ||
+    (candidate as any).linkedin_url ||
+    "";
+
+  const linkedinUrl =
+    generatedUrl ||
+    (candidate as any).linkedin_url ||
+    (candidate as any).profile_url ||
+    "";
+
+  const matchScorePct = Math.round(Number((candidate as any).match_score || 0));
+
+  const avatarInitial =
+    displayName
+      .split(" ")
+      .map((n) => (n ? n[0] : ""))
+      .join("")
+      .toUpperCase() || "C";
 
   const handleLinkedInClick = async () => {
+    if (linkedinUrl && !generatedUrl) {
+      // we already have a URL; open it
+      window.open(linkedinUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
     if (generatedUrl) {
       window.open(generatedUrl, "_blank", "noopener,noreferrer");
       return;
     }
-
-    if (isGeneratingUrl) return;
+    if (!profileId || isGeneratingUrl) return;
 
     setIsGeneratingUrl(true);
     setError(null);
 
     try {
-      const result = await generateLinkedInUrl(candidate.profile_id);
+      const result = await generateLinkedInUrl(String(profileId));
       const newUrl = result.linkedin_url;
-
-      if (newUrl) {
-        window.open(newUrl, "_blank", "noopener,noreferrer");
-        setGeneratedUrl(newUrl);
-        const updatedCandidate = { ...candidate, linkedin_url: newUrl };
-        onUpdateCandidate(updatedCandidate);
-      } else {
-        throw new Error("API did not return a valid URL.");
-      }
+      if (!newUrl) throw new Error("API did not return a valid URL.");
+      window.open(newUrl, "_blank", "noopener,noreferrer");
+      setGeneratedUrl(newUrl);
+      onUpdateCandidate({ ...(candidate as any), linkedin_url: newUrl } as Candidate);
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Failed to generate LinkedIn URL:", err);
       setError("Failed to find URL.");
     } finally {
@@ -93,16 +125,15 @@ export function CandidateRow({
   };
 
   const renderLinkedInButton = () => {
-    const finalUrl = generatedUrl || candidate.linkedin_url;
-
-    if (finalUrl) {
+    // if we already have a URL, render as link
+    if (linkedinUrl) {
       return (
         <a
-          href={finalUrl}
+          href={linkedinUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="text-teal-600 hover:text-teal-700 transition-colors"
-          title="Open Generated LinkedIn Profile"
+          title="Open LinkedIn/Profile"
         >
           <Linkedin size={18} />
         </a>
@@ -113,121 +144,69 @@ export function CandidateRow({
       return <Loader2 size={18} className="animate-spin text-gray-500" />;
     }
 
-    if (error) {
-      return (
-        <button
-          onClick={handleLinkedInClick}
-          className="text-red-500 hover:text-red-700 transition-colors"
-          title={`Error: ${error}. Click to try again.`}
-        >
-          <Linkedin size={18} />
-        </button>
-      );
-    }
-
     return (
       <button
         onClick={handleLinkedInClick}
-        className="text-gray-400 hover:text-teal-600 transition-colors"
-        title="Find LinkedIn Profile (Costly)"
+        className={error ? "text-red-500 hover:text-red-700" : "text-gray-400 hover:text-teal-600"}
+        title={error ? `Error: ${error}. Click to try again.` : "Find LinkedIn Profile (Costly)"}
       >
         <Linkedin size={18} />
       </button>
     );
   };
 
-  // Called when user sends message from CallSchedulePopup
-  const handleSendFromCallPopup = (
-    message: string,
-    channel?: "whatsapp" | "email"
-  ) => {
-    console.info(
-      `Sending message to ${candidate.profile_name} via ${channel}:`,
-      message
-    );
-
-    // lightweight local update (modify to match your backend/data model)
+  const handleSendFromCallPopup = (message: string, channel?: "whatsapp" | "email") => {
+    // eslint-disable-next-line no-console
+    console.info(`Sending message to ${displayName} via ${channel}:`, message);
     try {
-      const updatedCandidate: Candidate = {
-        ...candidate,
-        // @ts-ignore - optional metadata field; replace with real field if required
+      onUpdateCandidate({
+        ...(candidate as any),
         last_contacted_at: new Date().toISOString(),
-      } as unknown as Candidate;
-      onUpdateCandidate(updatedCandidate);
-    } catch (err) {
-      console.warn(
-        "Could not apply last_contacted update to candidate (type mismatch?)",
-        err
-      );
-    }
-
+      } as Candidate);
+    } catch {}
     setIsCallPopupOpen(false);
   };
 
-  // Called when user sends recommendation from RecommendPopup
   const handleRecommendSend = (type: "role" | "team", selection: string) => {
-    console.info(
-      `Recommended ${candidate.profile_name} to ${type} with selection: ${selection}`
-    );
-
-    // Example local update (customize as needed)
+    // eslint-disable-next-line no-console
+    console.info(`Recommended ${displayName} to ${type}: ${selection}`);
     try {
-      const updatedCandidate: Candidate = {
-        ...candidate,
-        // @ts-ignore allow flexible property - change to a valid field if desired
+      onUpdateCandidate({
+        ...(candidate as any),
         last_recommended_at: new Date().toISOString(),
-      } as unknown as Candidate;
-      onUpdateCandidate(updatedCandidate);
-    } catch (err) {
-      console.warn(
-        "Could not apply recommendation update to candidate (type mismatch?)",
-        err
-      );
-    }
-
+      } as Candidate);
+    } catch {}
     setIsRecommendPopupOpen(false);
   };
 
-  // Favorite toggle handler (optimistic)
   const handleFavoriteClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!profileId) return;
 
     const newVal = !isFav;
-    // optimistic UI update
     setIsFav(newVal);
     try {
       if (onToggleFavorite) {
-        await onToggleFavorite(
-          candidate.profile_id || (candidate as any).resume_id,
-          source,
-          newVal
-        );
+        await onToggleFavorite(String(profileId), source, newVal);
       }
-      // notify parent to persist the change in its state
-      onUpdateCandidate({ ...candidate, favorite: newVal });
+      onUpdateCandidate({ ...(candidate as any), favorite: newVal } as Candidate);
     } catch (err) {
-      // rollback on error
       setIsFav(!newVal);
+      // eslint-disable-next-line no-console
       console.warn("Failed to toggle favorite", err);
     }
   };
 
-  // Save / bookmark toggle handler (optimistic)
   const handleSaveClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-
     const newSaved = !isSaved;
     setIsSaved(newSaved);
-
     try {
-      // notify parent so it can persist saved state (if desired)
       onUpdateCandidate({ ...(candidate as any), saved: newSaved } as Candidate);
-    } catch (err) {
-      // no-op rollback would require parent confirmation; keep optimistic for now
+    } catch {
       setIsSaved(!newSaved);
-      console.warn("Failed to update saved state locally", err);
     }
   };
 
@@ -241,11 +220,11 @@ export function CandidateRow({
           </div>
           <div onClick={() => onNameClick(candidate)} className="cursor-pointer">
             <p className="font-semibold text-gray-800 hover:text-teal-600">
-              {candidate.profile_name}
+              {displayName}
             </p>
-            <p className="text-gray-500">{`${candidate.role || "—"} at ${
-              candidate.company || "—"
-            }`}</p>
+            <p className="text-gray-500">
+              {`${displayRole || "—"} at ${displayCompany || "—"}`}
+            </p>
           </div>
         </div>
 
@@ -254,10 +233,10 @@ export function CandidateRow({
           <div className="relative w-24 h-6 bg-green-100 rounded-full">
             <div
               className="absolute top-0 left-0 h-full bg-green-500 rounded-full"
-              style={{ width: `${Math.round(candidate.match_score || 0)}%` }}
+              style={{ width: `${Math.max(0, Math.min(100, matchScorePct))}%` }}
             />
             <span className="absolute inset-0 flex items-center justify-center text-xs font-semibold text-green-800">
-              {Math.round(candidate.match_score || 0)}%
+              {Math.max(0, Math.min(100, matchScorePct))}%
             </span>
           </div>
         </div>
@@ -265,15 +244,11 @@ export function CandidateRow({
         {/* Links */}
         <div className="col-span-2 flex items-center gap-4">
           <a
-            href={candidate.profile_url || "#"}
+            href={profileUrl || "#"}
             target="_blank"
             rel="noopener noreferrer"
-            className={
-              candidate.profile_url
-                ? "text-teal-600 hover:text-teal-700"
-                : "text-gray-400 cursor-not-allowed"
-            }
-            title="Open Original Profile URL"
+            className={profileUrl ? "text-teal-600 hover:text-teal-700" : "text-gray-400 cursor-not-allowed"}
+            title={profileUrl ? "Open Original Profile URL" : "No profile URL"}
           >
             <LinkIcon size={18} />
           </a>
@@ -281,9 +256,8 @@ export function CandidateRow({
           {renderLinkedInButton()}
         </div>
 
-        {/* Actions (bookmark/save, star, send/message arrow -> opens RecommendPopup, phone -> opens CallSchedulePopup) */}
+        {/* Actions */}
         <div className="col-span-1 flex items-center gap-3 text-gray-500 justify-end">
-          {/* SAVE / BOOKMARK */}
           <button
             onClick={handleSaveClick}
             title={isSaved ? "Unsave" : "Save"}
@@ -302,18 +276,16 @@ export function CandidateRow({
             <Star size={18} className={isFav ? "text-yellow-400" : "text-gray-400"} />
           </button>
 
-          {/* Send (paper-plane) icon — opens Recommend popup */}
           <button
             onClick={() => setIsRecommendPopupOpen(true)}
             className="hover:text-teal-500"
-            title="Recommend Action"
+            title="Recommend"
             aria-haspopup="dialog"
             aria-expanded={isRecommendPopupOpen}
           >
             <Send size={18} />
           </button>
 
-          {/* Phone button opens CallSchedulePopup */}
           <button
             onClick={() => setIsCallPopupOpen(true)}
             className="hover:text-teal-500"
@@ -330,8 +302,8 @@ export function CandidateRow({
       <CallSchedulePopup
         isOpen={isCallPopupOpen}
         onClose={() => setIsCallPopupOpen(false)}
-        candidateName={candidate.profile_name}
-        initialMessage={`Hi ${candidate.profile_name},
+        candidateName={displayName}
+        initialMessage={`Hi ${displayName},
 
 Hope you're doing well. I'd like to schedule a short call to discuss an opportunity. Are you available this week? Please share a few time slots that work for you.`}
         onSend={(message, channel) => handleSendFromCallPopup(message, channel)}

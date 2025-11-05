@@ -31,35 +31,59 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
   onToggleFavorite,
   source = 'ranked_candidates',
 }) => {
-  // debug log to ensure file loaded
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[AllCandidatesRow] mounted for candidate:', candidate?.profile_id || candidate?.profile_name);
+    console.log('[AllCandidatesRow] mounted:', (candidate as any).profile_id || (candidate as any).profile_name);
   }, [candidate]);
 
   const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
   const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).saved);
 
-  const avatarInitial = (candidate.profile_name || (candidate as any).name || '')
-    .split(' ')
-    .map((n) => (n ? n[0] : ''))
-    .join('')
-    .toUpperCase();
+  const displayName =
+    (candidate as any).profile_name ||
+    (candidate as any).person_name ||
+    (candidate as any).name ||
+    (candidate as any).full_name ||
+    'Unknown';
+
+  const displayCompany =
+    (candidate as any).company ||
+    (candidate as any).current_company ||
+    (candidate as any).organization_name ||
+    (candidate as any).organization ||
+    '';
+
+  const displayRole =
+    (candidate as any).role ||
+    (candidate as any).current_title ||
+    (candidate as any).title ||
+    '';
+
+  const profileId =
+    (candidate as any).profile_id ||
+    (candidate as any).resume_id ||
+    (candidate as any).id ||
+    '';
+
+  const avatarInitial =
+    displayName
+      .split(' ')
+      .map((n) => (n ? n[0] : ''))
+      .join('')
+      .toUpperCase() || 'NA';
 
   const handleFavoriteClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!profileId) return;
 
     const newVal = !isFav;
     setIsFav(newVal);
-
     try {
       if (onToggleFavorite) {
-        await onToggleFavorite(candidate.profile_id || (candidate as any).resume_id, source, newVal);
+        await onToggleFavorite(String(profileId), source, newVal);
       }
     } catch (err) {
       setIsFav(!newVal);
-      // eslint-disable-next-line no-console
       console.warn('Failed to toggle favorite', err);
     }
   };
@@ -68,8 +92,6 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setIsSaved((prev) => !prev);
-    // eslint-disable-next-line no-console
-    console.log('[AllCandidatesRow] save toggled', candidate?.profile_id, !isSaved);
   };
 
   return (
@@ -80,11 +102,11 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
 
       <div className="col-span-3 flex items-center gap-3">
         <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-200 text-slate-600 rounded-full font-bold text-xs">
-          {avatarInitial || 'NA'}
+          {avatarInitial}
         </div>
         <div>
-          <p className="font-bold text-slate-800">{candidate.profile_name || (candidate as any).name || 'Unknown'}</p>
-          <p className="text-slate-500 text-xs">{candidate.company || (candidate as any).company || ''}</p>
+          <p className="font-bold text-slate-800">{displayName}</p>
+          <p className="text-slate-500 text-xs">{displayCompany}</p>
         </div>
       </div>
 
@@ -96,13 +118,13 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
 
       <div className="col-span-2">
         <span className="px-2 py-1 text-xs font-medium rounded-full bg-slate-100 text-slate-700">
-          {candidate.role || (candidate as any).role || ''}
+          {displayRole}
         </span>
       </div>
 
       <div className="col-span-1">
         <a
-          href={candidate.profile_url || candidate.linkedin_url || '#'}
+          href={(candidate as any).profile_url || (candidate as any).validated_url || (candidate as any).linkedin_url || '#'}
           className="text-slate-400 hover:text-teal-600"
           target="_blank"
           rel="noreferrer"
@@ -111,9 +133,7 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
         </a>
       </div>
 
-      {/* ACTIONS COLUMN */}
       <div className="col-span-4 flex items-center gap-6 text-slate-400 justify-end pr-2 min-w-[200px]">
-        {/* DEBUG visible Save pill — extremely visible, red background */}
         <button
           data-qa="action-save"
           onClick={handleSaveClick}
@@ -123,7 +143,6 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
           SAVE
         </button>
 
-        {/* Bookmark icon (also present) */}
         <button
           data-qa="action-bookmark"
           onClick={handleSaveClick}
@@ -131,14 +150,9 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
           className="p-2 rounded hover:bg-slate-100 transition-colors"
           aria-pressed={isSaved}
         >
-          <Bookmark
-            size={20}
-            strokeWidth={1.6}
-            className={isSaved ? 'text-blue-600' : 'text-slate-400'}
-          />
+          <Bookmark size={20} strokeWidth={1.6} className={isSaved ? 'text-blue-600' : 'text-slate-400'} />
         </button>
 
-        {/* Favorite / Star */}
         <button
           data-qa="action-fav"
           onClick={handleFavoriteClick}
@@ -146,24 +160,17 @@ export const AllCandidatesRow: React.FC<AllCandidatesRowProps> = ({
           title={isFav ? 'Unfavorite' : 'Favorite'}
           className="p-2 rounded hover:bg-slate-100 transition-colors"
         >
-          <Star
-            size={20}
-            strokeWidth={1.6}
-            className={isFav ? 'text-yellow-400' : 'text-slate-400'}
-          />
+          <Star size={20} strokeWidth={1.6} className={isFav ? 'text-yellow-400' : 'text-slate-400'} />
         </button>
 
-        {/* Delete */}
         <button data-qa="action-delete" className="p-2 rounded hover:bg-slate-100 transition-colors" title="Delete">
           <Trash2 size={18} />
         </button>
 
-        {/* Send */}
         <button data-qa="action-send" className="p-2 rounded hover:bg-slate-100 transition-colors" title="Send">
           <Send size={18} />
         </button>
 
-        {/* Open / Call */}
         <button data-qa="action-open" className="p-2 rounded hover:bg-slate-100 transition-colors" title="Open">
           <CornerUpRight size={18} />
         </button>

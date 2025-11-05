@@ -26,6 +26,16 @@ import {
 
 import type { Candidate } from '../types/candidate';
 
+// put this near the top of the file (after imports is fine)
+const stableKey = (c: Candidate) => {
+  if ((c as any).rank_id) return `rank-${(c as any).rank_id}`;
+  if ((c as any).resume_id) return `resume-${(c as any).resume_id}-${(c as any).rank || Math.random()}`;
+  if (c.profile_id) return `web-${c.profile_id}`;
+  return `fallback-${Math.random().toString(36).substring(2, 9)}`;
+};
+
+
+
 // Loader component (Unchanged)
 const Loader = () => (
   <svg className="animate-spin h-5 w-5 text-teal-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -629,31 +639,31 @@ export function SearchPage({ user }: { user: User }) {
     // open popup for candidate
     setSelectedCandidate(candidate);
   };
-  
+
   const handleCloseCandidatePopup = () => {
     setSelectedCandidate(null);
   };
-  
+
 
   const getMainActionButton = () => {
     if (isRankingLoading) {
       return (
-        <button 
-          onClick={handleStopSearch} 
+        <button
+          onClick={handleStopSearch}
           className="w-full bg-red-600 text-white font-semibold py-3 rounded-lg hover:bg-red-700 flex items-center justify-center gap-2 transition-colors"
         >
-          <XCircle size={18}/> Stop Search
+          <XCircle size={18} /> Stop Search
         </button>
       );
     }
     const buttonText = sourcingOption === 'db' ? 'Rank' : 'Search and Rank';
     return (
-      <button 
-        onClick={handleSearchAndRank} 
-        disabled={isJdLoading} 
+      <button
+        onClick={handleSearchAndRank}
+        disabled={isJdLoading}
         className="w-full bg-teal-600 text-white font-semibold py-3 rounded-lg hover:bg-teal-700 flex items-center justify-center gap-2 disabled:bg-gray-400 transition-colors"
       >
-        <SearchIcon size={18}/> {buttonText}
+        <SearchIcon size={18} /> {buttonText}
       </button>
     );
   };
@@ -712,15 +722,15 @@ export function SearchPage({ user }: { user: User }) {
         <div className="grid grid-cols-12 gap-8 h-full">
           <aside className="col-span-3 flex flex-col gap-6 overflow-y-auto pb-4">
             {/* JD Selection Box  */}
-             <div className="p-4 bg-white rounded-lg border border-gray-200 flex-shrink-0">
+            <div className="p-4 bg-white rounded-lg border border-gray-200 flex-shrink-0">
               <div className="flex justify-between items-center mb-2">
                 <label className="font-semibold text-gray-700">Select Role</label>
                 <button onClick={() => jdInputRef.current?.click()} className="text-sm text-teal-600 hover:underline flex items-center gap-1">
-                  <Plus size={14}/> Add New Role
+                  <Plus size={14} /> Add New Role
                 </button>
-                <input type="file" ref={jdInputRef} onChange={handleJdFileChange} className="hidden" accept=".pdf,.docx,.txt"/>
+                <input type="file" ref={jdInputRef} onChange={handleJdFileChange} className="hidden" accept=".pdf,.docx,.txt" />
               </div>
-              
+
               <select
                 value={currentJd?.jd_id || ''}
                 onChange={(e) => handleJdSelection(e.target.value, userJds)}
@@ -812,12 +822,12 @@ export function SearchPage({ user }: { user: User }) {
               )}
 
               <button onClick={() => resumeInputRef.current?.click()} className="mt-4 w-full border-dashed border-2 border-gray-300 rounded-lg p-6 text-center hover:border-teal-500 hover:text-teal-500 transition-colors">
-                <UploadCloud size={24} className="mx-auto text-gray-400"/>
+                <UploadCloud size={24} className="mx-auto text-gray-400" />
                 <p className="text-sm text-gray-500 mt-2">
                   {resumeFiles ? `${resumeFiles.length} resumes selected` : 'Upload Resumes'}
                 </p>
               </button>
-              <input type="file" ref={resumeInputRef} onChange={handleResumeFilesChange} className="hidden" accept=".pdf,.docx,.txt" multiple/>
+              <input type="file" ref={resumeInputRef} onChange={handleResumeFilesChange} className="hidden" accept=".pdf,.docx,.txt" multiple />
             </div>
             {getMainActionButton()}
             {uploadStatus && (
@@ -826,7 +836,7 @@ export function SearchPage({ user }: { user: User }) {
               </div>
             )}
           </aside>
-          
+
           {/* Main Content Area */}
           <div className="col-span-9 flex flex-col gap-8 h-full min-h-0">
             <div className="p-6 bg-white rounded-lg border border-gray-200 flex flex-col flex-grow min-h-0">
@@ -850,65 +860,66 @@ export function SearchPage({ user }: { user: User }) {
                   <div className="col-span-2">Actions</div>
                 </div>
               </div>
-              
+
               <div className="flex-grow overflow-y-auto max-h-[30vh]">
-              {candidates.map((candidate) => (
-                <CandidateRow 
-                  key={candidate.profile_id} 
-                  candidate={candidate} 
-                  onUpdateCandidate={handleUpdateCandidate}
-                  onNameClick={handleCandidateNameClick}
-                  // NEW: favorite toggle prop
-                  onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
-                    handleToggleFavorite(candidateId, (source as any) ?? 'ranked_candidates', fav ?? !candidate.favorite)
-                  }
-                />
-              ))}
+                {candidates.map((candidate) => (
+                  <CandidateRow
+                    key={stableKey(candidate)}
+                    candidate={candidate}
+                    onUpdateCandidate={handleUpdateCandidate}
+                    onNameClick={handleCandidateNameClick}
+                    onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
+                      handleToggleFavorite(candidateId, (source as any) ?? 'ranked_candidates', fav ?? !candidate.favorite)
+                    }
+                    source={(candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'}
+                  />
+                ))}
+
               </div>
             </div>
 
             <div className="p-6 bg-white rounded-lg border border-gray-200 flex-shrink-0">
-                <div className="flex flex-col gap-4 mb-4">
-                    {hasSearched && (
-                      <div className="self-end">
-                          <div className="p-3 text-sm rounded-lg bg-green-100 text-green-800">
-                             Okay, filtering for candidates... Here are the top results.
-                          </div>
-                      </div>
-                    )}
-                </div>
-
-                <div className="relative">
-                <input
-  type="text"
-  value={chatMessage}
-  onChange={(e) => setChatMessage(e.target.value)}
-  placeholder={sourcingOption === 'db' ? 'Disabled for My Database' : 'Chat with AIRA... (optional)'}
-  className="w-full pl-4 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-  onKeyDown={(e) => e.key === 'Enter' && !isRankingLoading && sourcingOption !== 'db' && handleSearchAndRank()}
-  disabled={isRankingLoading || sourcingOption === 'db'}
-/>
-<button 
-  onClick={isRankingLoading ? handleStopSearch : handleSearchAndRank} 
-  className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-teal-600"
-  disabled={isRankingLoading || sourcingOption === 'db'}
-  aria-disabled={isRankingLoading || sourcingOption === 'db'}
->
-  {isRankingLoading ? <XCircle size={20} className="text-red-500"/> : <SendHorizonal size={20} />}
-</button>
-
-                </div>
-
-                {hasSearched && !isRankingLoading && (
-                  <div className="flex justify-end pt-4">
-                      <button 
-                        onClick={handleSearchAndRank}
-                        className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900"
-                      >
-                          <RefreshCw size={14} /> Rerun Search
-                      </button>
+              <div className="flex flex-col gap-4 mb-4">
+                {hasSearched && (
+                  <div className="self-end">
+                    <div className="p-3 text-sm rounded-lg bg-green-100 text-green-800">
+                      Okay, filtering for candidates... Here are the top results.
+                    </div>
                   </div>
                 )}
+              </div>
+
+              <div className="relative">
+                <input
+                  type="text"
+                  value={chatMessage}
+                  onChange={(e) => setChatMessage(e.target.value)}
+                  placeholder={sourcingOption === 'db' ? 'Disabled for My Database' : 'Chat with AIRA... (optional)'}
+                  className="w-full pl-4 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                  onKeyDown={(e) => e.key === 'Enter' && !isRankingLoading && sourcingOption !== 'db' && handleSearchAndRank()}
+                  disabled={isRankingLoading || sourcingOption === 'db'}
+                />
+                <button
+                  onClick={isRankingLoading ? handleStopSearch : handleSearchAndRank}
+                  className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-teal-600"
+                  disabled={isRankingLoading || sourcingOption === 'db'}
+                  aria-disabled={isRankingLoading || sourcingOption === 'db'}
+                >
+                  {isRankingLoading ? <XCircle size={20} className="text-red-500" /> : <SendHorizonal size={20} />}
+                </button>
+
+              </div>
+
+              {hasSearched && !isRankingLoading && (
+                <div className="flex justify-end pt-4">
+                  <button
+                    onClick={handleSearchAndRank}
+                    className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900"
+                  >
+                    <RefreshCw size={14} /> Rerun Search
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

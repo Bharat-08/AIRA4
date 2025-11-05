@@ -309,104 +309,126 @@ async def get_combined_results(
     db: Session = Depends(get_db)
 ):
     """
-    Returns combined results from both ranked_candidates (web) and ranked_candidates_from_resume (uploaded resumes)
-    where created_at > since. Results are enriched with favorite flags and sorted by match_score desc.
+    Returns combined results from:
+      - ranked_candidates (web)  JOIN search on (profile_id, jd_id)
+      - ranked_candidates_from_resume (uploaded resumes) JOIN resume on (resume_id, jd_id)
+
+    Each item includes: profile_name/person_name, role, company, profile_url, match_score, favorite, source, etc.
+    Sorted by match_score desc.
     """
+    from app.models.candidate import RankedCandidate, RankedCandidateFromResume
+    # Import your ORM models that map to the "search" and "resume" tables
+    # If they live elsewhere, adjust these imports accordingly.
+    from app.models.search import Search          # <-- must exist as ORM model
+    from app.models.resume import Resume          # <-- must exist as ORM model
+
     try:
-        # Convert jd_id to UUID if possible for proper comparison
         try:
             jd_uuid = uuid.UUID(str(jd_id))
         except Exception:
-            jd_uuid = jd_id  # fallback - SQLAlchemy may accept string for comparison depending on driver
+            # If your DB uses UUID type, SQLAlchemy will usually coerce string UUID fine.
+            jd_uuid = jd_id
 
-        # Query web results
-        web_q = db.query(RankedCandidate).filter(RankedCandidate.jd_id == jd_uuid, RankedCandidate.created_at > since).all()
+        # ---- WEB RESULTS: ranked_candidates ⨝ search ----
+        web_join = (
+            db.query(RankedCandidate, Search)
+            .join(
+                Search,
+                (Search.profile_id == RankedCandidate.profile_id) &
+                (Search.jd_id == RankedCandidate.jd_id)
+            )
+            .filter(
+                RankedCandidate.jd_id == jd_uuid,
+                RankedCandidate.created_at > since
+            )
+            .all()
+        )
+
         web_items = []
-        for r in (web_q or []):
-            # Try to find a human-readable name in the 'search' table via profile_id
-            profile_name = None
-            try:
-                if getattr(r, "profile_id", None) is not None:
-                    q = text("SELECT profile_name FROM search WHERE profile_id = :pid LIMIT 1")
-                    res = db.execute(q, {"pid": str(r.profile_id)}).fetchone()
-                    if res:
-                        # res may be a tuple or Row; take first value
-                        profile_name = res[0] if isinstance(res, (list, tuple)) else res.get("profile_name", None)
-            except Exception:
-                profile_name = None
-
+        for rc, s in web_join:
             item = {
-                "rank_id": str(r.rank_id) if getattr(r, "rank_id", None) is not None else None,
-                "user_id": str(r.user_id) if getattr(r, "user_id", None) is not None else None,
-                "jd_id": str(r.jd_id) if getattr(r, "jd_id", None) is not None else None,
-                "profile_id": str(r.profile_id) if getattr(r, "profile_id", None) is not None else None,
-                "profile_name": profile_name,
-                "rank": r.rank,
-                "match_score": float(r.match_score) if getattr(r, "match_score", None) is not None else None,
-                "strengths": r.strengths,
-                "favorite": bool(r.favorite),
-                "save_for_future": bool(r.save_for_future),
-                "send_to_recruiter": str(r.send_to_recruiter) if getattr(r, "send_to_recruiter", None) is not None else None,
-                "outreached": bool(r.outreached),
-                "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) is not None else None,
-                "linkedin_url": r.linkedin_url,
-                "contacted": bool(r.contacted),
-                "stage": r.stage,
-                "source": "web"
+                "rank_id": str(rc.rank_id),
+                "user_id": str(rc.user_id) if rc.user_id else None,
+                "jd_id": str(rc.jd_id) if rc.jd_id else None,
+                "profile_id": str(rc.profile_id) if rc.profile_id else None,
+                "rank": rc.rank,
+                "match_score": float(rc.match_score) if rc.match_score is not None else None,
+                "strengths": rc.strengths,
+                "favorite": bool(rc.favorite),
+                "save_for_future": bool(rc.save_for_future),
+                "send_to_recruiter": str(rc.send_to_recruiter) if rc.send_to_recruiter else None,
+                "outreached": bool(rc.outreached),
+                "created_at": rc.created_at.isoformat() if rc.created_at else None,
+                "linkedin_url": rc.linkedin_url,
+                "contacted": bool(rc.contacted),
+                "stage": rc.stage,
+                "source": "web",
+
+                # From SEARCH table (names/role/company/profile_url)
+                "profile_name": s.profile_name,
+                "role": s.role,
+                "company": s.company,
+                "profile_url": s.profile_url,
             }
             web_items.append(item)
 
-        # Query resume-based results
-        resume_q = db.query(RankedCandidateFromResume).filter(RankedCandidateFromResume.jd_id == jd_uuid, RankedCandidateFromResume.created_at > since).all()
-        resume_items = []
-        for r in (resume_q or []):
-            # Try to find person_name in 'resume' table via resume_id
-            person_name = None
-            try:
-                if getattr(r, "resume_id", None) is not None:
-                    q = text("SELECT person_name FROM resume WHERE resume_id = :rid LIMIT 1")
-                    res = db.execute(q, {"rid": str(r.resume_id)}).fetchone()
-                    if res:
-                        person_name = res[0] if isinstance(res, (list, tuple)) else res.get("person_name", None)
-            except Exception:
-                person_name = None
+        # ---- RESUME RESULTS: ranked_candidates_from_resume ⨝ resume ----
+        resume_join = (
+            db.query(RankedCandidateFromResume, Resume)
+            .join(
+                Resume,
+                (Resume.resume_id == RankedCandidateFromResume.resume_id) &
+                (Resume.jd_id == RankedCandidateFromResume.jd_id)
+            )
+            .filter(
+                RankedCandidateFromResume.jd_id == jd_uuid,
+                RankedCandidateFromResume.created_at > since
+            )
+            .all()
+        )
 
+        resume_items = []
+        for rr, r in resume_join:
             item = {
-                "rank_id": str(r.rank_id) if getattr(r, "rank_id", None) is not None else None,
-                "user_id": str(r.user_id) if getattr(r, "user_id", None) is not None else None,
-                "jd_id": str(r.jd_id) if getattr(r, "jd_id", None) is not None else None,
-                "resume_id": str(r.resume_id) if getattr(r, "resume_id", None) is not None else None,
-                "profile_name": person_name,
-                "rank": r.rank,
-                "match_score": float(r.match_score) if getattr(r, "match_score", None) is not None else None,
-                "strengths": r.strengths,
-                "favorite": bool(r.favorite),
-                "save_for_future": bool(r.save_for_future),
-                "send_to_recruiter": str(r.send_to_recruiter) if getattr(r, "send_to_recruiter", None) is not None else None,
-                "outreached": bool(r.outreached),
-                "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) is not None else None,
-                "linkedin_url": r.linkedin_url,
-                "contacted": bool(r.contacted),
-                "stage": r.stage,
-                "source": "resume"
+                "rank_id": str(rr.rank_id),
+                "user_id": str(rr.user_id) if rr.user_id else None,
+                "jd_id": str(rr.jd_id) if rr.jd_id else None,
+                "resume_id": str(rr.resume_id) if rr.resume_id else None,
+                "rank": rr.rank,
+                "match_score": float(rr.match_score) if rr.match_score is not None else None,
+                "strengths": rr.strengths,
+                "favorite": bool(rr.favorite),
+                "save_for_future": bool(rr.save_for_future),
+                "send_to_recruiter": str(rr.send_to_recruiter) if rr.send_to_recruiter else None,
+                "outreached": bool(rr.outreached),
+                "created_at": rr.created_at.isoformat() if rr.created_at else None,
+                "linkedin_url": rr.linkedin_url,
+                "contacted": bool(rr.contacted),
+                "stage": rr.stage,
+                "source": "resume",
+
+                # From RESUME table (person_name/role/company/profile_url)
+                "profile_name": r.person_name,
+                "role": r.role,
+                "company": r.company,
+                "profile_url": r.profile_url,
             }
             resume_items.append(item)
 
         combined = web_items + resume_items
 
-        # Enrich combined items with favorites again (defensive - enrich_with_favorites expects ORM or dicts)
+        # Re-enrich favorites defensively (no harm if already present)
         try:
             enriched = enrich_with_favorites(db, combined)
         except Exception as e:
-            logger.exception("Failed to enrich combined results: %s", e)
-            # fallback: ensure favorite exists as boolean
+            logger.exception("Failed to enrich combined results with favorites: %s", e)
             enriched = []
             for it in combined:
                 it = dict(it)
                 it.setdefault("favorite", False)
                 enriched.append(it)
 
-        # Sort by match_score descending (handle None safely: treat None as very low)
+        # Sort by match_score desc (missing scores last)
         def score_val(x):
             ms = x.get("match_score")
             try:
@@ -415,12 +437,14 @@ async def get_combined_results(
                 return -9999.0
 
         enriched_sorted = sorted(enriched, key=score_val, reverse=True)
-
         return enriched_sorted
 
     except Exception as e:
         logger.exception("Error while fetching combined results: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
 
 
 # --- PRESERVED ENDPOINTS (Functionality Unchanged) ---
