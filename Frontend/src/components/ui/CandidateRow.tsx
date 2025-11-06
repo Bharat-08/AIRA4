@@ -47,44 +47,44 @@ export function CandidateRow({
 
   // ---- Robust display fields (covers all shapes coming from web + resume pipelines) ----
   const displayName =
-    (candidate as any).profile_name ||
-    (candidate as any).person_name ||
-    (candidate as any).name ||
-    (candidate as any).full_name ||
-    "—";
+  candidate.profile_name || // from 'search' table
+  candidate.person_name || // from 'resume' table
+  candidate.name ||
+  candidate.full_name ||
+  "—";
 
-  const displayRole =
-    (candidate as any).role ||
-    (candidate as any).current_title ||
-    (candidate as any).title ||
-    "—";
+const displayRole =
+  candidate.role || // from 'search' OR 'resume'
+  candidate.current_title ||
+  candidate.title ||
+  "—";
 
-  const displayCompany =
-    (candidate as any).company ||
-    (candidate as any).current_company ||
-    (candidate as any).organization_name ||
-    (candidate as any).organization ||
-    "—";
+const displayCompany =
+  candidate.company || // from 'search' OR 'resume'
+  candidate.current_company ||
+  candidate.organization_name ||
+  candidate.organization ||
+  "—";
 
-  const profileId =
-    (candidate as any).profile_id ||
-    (candidate as any).resume_id ||
-    (candidate as any).id ||
-    "";
+const profileId =
+  candidate.profile_id || // from 'search' table
+  candidate.resume_id || // from 'resume' table
+  (candidate as any).id || // Keep this as a final fallback
+  "";
 
-  const profileUrl =
-    (candidate as any).profile_url ||
-    (candidate as any).validated_url ||
-    (candidate as any).linkedin_url ||
-    "";
+const profileUrl =
+  candidate.profile_url || // from 'search' OR 'resume'
+  (candidate as any).validated_url || // This isn't in the schema, so leave as 'any'
+  candidate.linkedin_url ||
+  "";
 
-  const linkedinUrl =
-    generatedUrl ||
-    (candidate as any).linkedin_url ||
-    (candidate as any).profile_url ||
-    "";
+const linkedinUrl =
+  generatedUrl ||
+  candidate.linkedin_url ||
+  candidate.profile_url ||
+  "";
 
-  const matchScorePct = Math.round(Number((candidate as any).match_score || 0));
+const matchScorePct = Math.round(Number(candidate.match_score || 0));
 
   const avatarInitial =
     displayName

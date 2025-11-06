@@ -26,12 +26,14 @@ from app.worker import (
 from ..dependencies import get_current_user, get_supabase_client
 from ..models.user import User
 from supabase import Client
-from ..services.linkedin_finder_service import LinkedInFinder
 
 # DB + ORM
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.candidate import RankedCandidate, RankedCandidateFromResume
+
+# LinkedIn finder
+from ..services.linkedin_finder_service import LinkedInFinder
 
 # --- MODELS (Unchanged) ---
 class SearchRequest(BaseModel):
@@ -91,11 +93,13 @@ def enrich_with_favorites(db: Session, candidates: Iterable[Any]) -> List[Dict]:
     fav_by_resume = {}
 
     if profile_ids:
-        rows = db.query(RankedCandidate.profile_id, RankedCandidate.favorite).filter(RankedCandidate.profile_id.in_(list(profile_ids))).all()
+        rows = db.query(RankedCandidate.profile_id, RankedCandidate.favorite)\
+                 .filter(RankedCandidate.profile_id.in_(list(profile_ids))).all()
         fav_by_profile = {str(r[0]): bool(r[1]) for r in rows}
 
     if resume_ids:
-        rows = db.query(RankedCandidateFromResume.resume_id, RankedCandidateFromResume.favorite).filter(RankedCandidateFromResume.resume_id.in_(list(resume_ids))).all()
+        rows = db.query(RankedCandidateFromResume.resume_id, RankedCandidateFromResume.favorite)\
+                 .filter(RankedCandidateFromResume.resume_id.in_(list(resume_ids))).all()
         fav_by_resume = {str(r[0]): bool(r[1]) for r in rows}
 
     enriched = []
@@ -104,15 +108,14 @@ def enrich_with_favorites(db: Session, candidates: Iterable[Any]) -> List[Dict]:
         if isinstance(c, dict):
             item = dict(c)  # shallow copy
         else:
-            # convert object to dict by pulling attributes commonly used
-            item = {}
-            for attr in ("profile_id", "resume_id", "profile_name", "name", "role", "company", "match_score", "strengths", "linkedin_url"):
-                if hasattr(c, attr):
-                    item[attr] = getattr(c, attr)
-            if hasattr(c, "__dict__"):
+            # Convert SQLAlchemy model to dict
+            item = {col.name: getattr(c, col.name) for col in c.__table__.columns}
+            
+            # Handle potential __dict__ attributes if not a pure ORM model (less ideal)
+            if not item and hasattr(c, "__dict__"):
                 try:
                     for k, v in c.__dict__.items():
-                        if k not in item:
+                        if k not in item and not k.startswith('_'):
                             item[k] = v
                 except Exception:
                     pass
@@ -130,7 +133,111 @@ def enrich_with_favorites(db: Session, candidates: Iterable[Any]) -> List[Dict]:
     return enriched
 
 
-# --- EXISTING ENDPOINTS (unchanged) ---
+# ----------------------------
+# Base-table merge helpers (Unchanged)
+# ----------------------------
+
+def _fetch_search_base_map(db: Session, profile_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Returns { profile_id: {profile_name, role, company, profile_url} } for ids in search table.
+    """
+    base: Dict[str, Dict[str, Any]] = {}
+    if not profile_ids:
+        return base
+    
+    # ===== FIX IS HERE =====
+    # Use a list, not a tuple
+    profile_id_list = list(set(profile_ids))
+    if not profile_id_list:
+        return base
+
+    rows = db.execute(
+        text("""
+            SELECT profile_id, profile_name, role, company, profile_url
+            FROM public.search
+            WHERE profile_id = ANY(:pids) -- Use = ANY() for array parameter
+            """),
+        {"pids": profile_id_list}, # Pass the list
+    ).fetchall()
+    # ===== END FIX =====
+
+    for row in rows:
+        d = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+        base[str(d["profile_id"])] = {
+            "profile_name": d.get("profile_name"),
+            "role": d.get("role"),
+            "company": d.get("company"),
+            "profile_url": d.get("profile_url"),
+        }
+    return base
+
+
+def _fetch_resume_base_map(db: Session, resume_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Returns { resume_id: {person_name, role, company, profile_url} } for ids in resume table.
+    """
+    base: Dict[str, Dict[str, Any]] = {}
+    if not resume_ids:
+        return base
+    
+    # ===== FIX IS HERE =====
+    # Use a list, not a tuple
+    resume_id_list = list(set(resume_ids))
+    if not resume_id_list:
+        return base
+
+    rows = db.execute(
+        text("""
+            SELECT resume_id, person_name, role, company, profile_url
+            FROM public.resume
+            WHERE resume_id = ANY(:rids) -- Use = ANY() for array parameter
+            """),
+        {"rids": resume_id_list}, # Pass the list
+    ).fetchall()
+    # ===== END FIX =====
+
+    for row in rows:
+        d = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+        base[str(d["resume_id"])] = {
+            "person_name": d.get("person_name"),
+            "role": d.get("role"),
+            "company": d.get("company"),
+            "profile_url": d.get("profile_url"),
+        }
+    return base
+
+
+def _merge_web_ranked_with_search_base(items: List[Dict], base_map: Dict[str, Dict[str, Any]]) -> List[Dict]:
+    merged: List[Dict] = []
+    for it in items:
+        pid = str(it.get("profile_id")) if it.get("profile_id") else None
+        base = base_map.get(pid or "", {})
+        # prefer base-table values; fall back to any existing fields
+        it["profile_name"] = base.get("profile_name") or it.get("profile_name")
+        it["role"]        = base.get("role") or it.get("role")
+        it["company"]     = base.get("company") or it.get("company")
+        it["profile_url"] = base.get("profile_url") or it.get("profile_url")
+        it["source"] = "web" # Add source for clarity
+        merged.append(it)
+    return merged
+
+
+def _merge_resume_ranked_with_resume_base(items: List[Dict], base_map: Dict[str, Dict[str, Any]]) -> List[Dict]:
+    merged: List[Dict] = []
+    for it in items:
+        rid = str(it.get("resume_id")) if it.get("resume_id") else None
+        base = base_map.get(rid or "", {})
+        # attach resume base fields
+        it["person_name"] = base.get("person_name") or it.get("person_name")
+        it["role"]        = base.get("role") or it.get("role")
+        it["company"]     = base.get("company") or it.get("company")
+        it["profile_url"] = base.get("profile_url") or it.get("profile_url")
+        it["source"] = "resume" # Add source for clarity
+        merged.append(it)
+    return merged
+
+
+# --- EXISTING ENDPOINTS (with fixes) ---
 
 @router.post("/search", status_code=status.HTTP_202_ACCEPTED)
 async def start_search_and_rank(
@@ -175,6 +282,11 @@ async def start_apollo_search(
 
 @router.get("/search/results/{task_id}")
 async def get_search_results(task_id: str, db: Session = Depends(get_db)):
+    """
+    After Celery reports completion, take the returned ranked rows (with profile_id),
+    enrich with favorites, then MERGE base profile fields (name/role/company/profile_url)
+    from the `public.search` table so the frontend always gets display fields.
+    """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
         return {"status": "processing"}
@@ -187,20 +299,26 @@ async def get_search_results(task_id: str, db: Session = Depends(get_db)):
         )
 
     result_items = payload.get("result") or payload.get("results") or payload.get("data") or []
+
+    # 1) favorites
     try:
         enriched = enrich_with_favorites(db, result_items)
     except Exception as e:
         logger.exception("Failed to enrich search results with favorites: %s", e)
+        # Fallback for enrichment
         enriched = []
         for r in result_items:
-            if isinstance(r, dict):
-                item = dict(r)
-                item.setdefault("favorite", False)
-            else:
-                item = {"favorite": False}
+            item = dict(r) if isinstance(r, dict) else {col.name: getattr(r, col.name) for col in r.__table__.columns}
+            item.setdefault("favorite", False)
             enriched.append(item)
 
-    return {"status": payload.get("status", "completed"), "data": enriched}
+
+    # 2) base merge from public.search
+    profile_ids = [str(x.get("profile_id")) for x in enriched if isinstance(x, dict) and x.get("profile_id")]
+    base_map = _fetch_search_base_map(db, profile_ids)
+    merged = _merge_web_ranked_with_search_base(enriched, base_map)
+
+    return {"status": payload.get("status", "completed"), "data": merged}
 
 
 @router.post("/rank-resumes", status_code=status.HTTP_202_ACCEPTED)
@@ -215,6 +333,11 @@ async def start_rank_resumes(
 
 @router.get("/rank-resumes/results/{task_id}")
 async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
+    """
+    After Celery reports completion, take the returned ranked rows (with resume_id),
+    enrich with favorites, then MERGE base fields (person_name/role/company/profile_url)
+    from the `public.resume` table so the frontend always gets display fields.
+    """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
         return {"status": "processing"}
@@ -227,20 +350,25 @@ async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
         )
 
     result_items = payload.get("result") or payload.get("results") or payload.get("data") or []
+
+    # 1) favorites
     try:
         enriched = enrich_with_favorites(db, result_items)
     except Exception as e:
         logger.exception("Failed to enrich rank-resumes results with favorites: %s", e)
+        # Fallback for enrichment
         enriched = []
         for r in result_items:
-            if isinstance(r, dict):
-                item = dict(r)
-                item.setdefault("favorite", False)
-            else:
-                item = {"favorite": False}
+            item = dict(r) if isinstance(r, dict) else {col.name: getattr(r, col.name) for col in r.__table__.columns}
+            item.setdefault("favorite", False)
             enriched.append(item)
 
-    return {"status": payload.get("status", "completed"), "data": enriched}
+    # 2) base merge from public.resume
+    resume_ids = [str(x.get("resume_id")) for x in enriched if isinstance(x, dict) and x.get("resume_id")]
+    base_map = _fetch_resume_base_map(db, resume_ids)
+    merged = _merge_resume_ranked_with_resume_base(enriched, base_map)
+
+    return {"status": payload.get("status", "completed"), "data": merged}
 
 
 # --- NEW ENDPOINT: Combined Search (start tasks) ---
@@ -290,7 +418,6 @@ async def trigger_combined_search(
                 launched["resume_task_id"] = resume_task.id
             except Exception as fe:
                 logger.exception("Failed to enqueue resume processing task: %s", fe)
-                # Return 500 because we couldn't enqueue the resume task after accepting the request
                 raise HTTPException(status_code=500, detail=f"Failed to enqueue resume processing task: {fe}")
 
         return {"status": "processing", **launched}
@@ -312,112 +439,60 @@ async def get_combined_results(
     Returns combined results from:
       - ranked_candidates (web)  JOIN search on (profile_id, jd_id)
       - ranked_candidates_from_resume (uploaded resumes) JOIN resume on (resume_id, jd_id)
-
-    Each item includes: profile_name/person_name, role, company, profile_url, match_score, favorite, source, etc.
-    Sorted by match_score desc.
+    This version avoids importing app.models.search and app.models.resume.
     """
-    from app.models.candidate import RankedCandidate, RankedCandidateFromResume
-    # Import your ORM models that map to the "search" and "resume" tables
-    # If they live elsewhere, adjust these imports accordingly.
-    from app.models.search import Search          # <-- must exist as ORM model
-    from app.models.resume import Resume          # <-- must exist as ORM model
-
     try:
         try:
             jd_uuid = uuid.UUID(str(jd_id))
         except Exception:
-            # If your DB uses UUID type, SQLAlchemy will usually coerce string UUID fine.
-            jd_uuid = jd_id
+            jd_uuid = jd_id  # let SQLAlchemy coerce if already UUID
 
-        # ---- WEB RESULTS: ranked_candidates ⨝ search ----
-        web_join = (
-            db.query(RankedCandidate, Search)
-            .join(
-                Search,
-                (Search.profile_id == RankedCandidate.profile_id) &
-                (Search.jd_id == RankedCandidate.jd_id)
-            )
+        # ---- 1. FETCH WEB RESULTS ----
+        web_ranked_rows = (
+            db.query(RankedCandidate)
             .filter(
                 RankedCandidate.jd_id == jd_uuid,
                 RankedCandidate.created_at > since
             )
             .all()
         )
+        # Convert ORM models to simple dicts
+        web_items = [
+            {col.name: getattr(rc, col.name) for col in rc.__table__.columns}
+            for rc in web_ranked_rows
+        ]
 
-        web_items = []
-        for rc, s in web_join:
-            item = {
-                "rank_id": str(rc.rank_id),
-                "user_id": str(rc.user_id) if rc.user_id else None,
-                "jd_id": str(rc.jd_id) if rc.jd_id else None,
-                "profile_id": str(rc.profile_id) if rc.profile_id else None,
-                "rank": rc.rank,
-                "match_score": float(rc.match_score) if rc.match_score is not None else None,
-                "strengths": rc.strengths,
-                "favorite": bool(rc.favorite),
-                "save_for_future": bool(rc.save_for_future),
-                "send_to_recruiter": str(rc.send_to_recruiter) if rc.send_to_recruiter else None,
-                "outreached": bool(rc.outreached),
-                "created_at": rc.created_at.isoformat() if rc.created_at else None,
-                "linkedin_url": rc.linkedin_url,
-                "contacted": bool(rc.contacted),
-                "stage": rc.stage,
-                "source": "web",
-
-                # From SEARCH table (names/role/company/profile_url)
-                "profile_name": s.profile_name,
-                "role": s.role,
-                "company": s.company,
-                "profile_url": s.profile_url,
-            }
-            web_items.append(item)
-
-        # ---- RESUME RESULTS: ranked_candidates_from_resume ⨝ resume ----
-        resume_join = (
-            db.query(RankedCandidateFromResume, Resume)
-            .join(
-                Resume,
-                (Resume.resume_id == RankedCandidateFromResume.resume_id) &
-                (Resume.jd_id == RankedCandidateFromResume.jd_id)
-            )
+        # ---- 2. FETCH RESUME RESULTS ----
+        resume_ranked_rows = (
+            db.query(RankedCandidateFromResume)
             .filter(
                 RankedCandidateFromResume.jd_id == jd_uuid,
                 RankedCandidateFromResume.created_at > since
             )
             .all()
         )
+        # Convert ORM models to simple dicts
+        resume_items = [
+            {col.name: getattr(rr, col.name) for col in rr.__table__.columns}
+            for rr in resume_ranked_rows
+        ]
 
-        resume_items = []
-        for rr, r in resume_join:
-            item = {
-                "rank_id": str(rr.rank_id),
-                "user_id": str(rr.user_id) if rr.user_id else None,
-                "jd_id": str(rr.jd_id) if rr.jd_id else None,
-                "resume_id": str(rr.resume_id) if rr.resume_id else None,
-                "rank": rr.rank,
-                "match_score": float(rr.match_score) if rr.match_score is not None else None,
-                "strengths": rr.strengths,
-                "favorite": bool(rr.favorite),
-                "save_for_future": bool(rr.save_for_future),
-                "send_to_recruiter": str(rr.send_to_recruiter) if rr.send_to_recruiter else None,
-                "outreached": bool(rr.outreached),
-                "created_at": rr.created_at.isoformat() if rr.created_at else None,
-                "linkedin_url": rr.linkedin_url,
-                "contacted": bool(rr.contacted),
-                "stage": rr.stage,
-                "source": "resume",
+        # ---- 3. MERGE BASE DATA (Name, Role, etc.) ----
+        
+        # Merge web data
+        profile_ids = [str(x.get("profile_id")) for x in web_items if x.get("profile_id")]
+        web_base_map = _fetch_search_base_map(db, profile_ids)
+        merged_web_items = _merge_web_ranked_with_search_base(web_items, web_base_map)
+        
+        # Merge resume data
+        resume_ids = [str(x.get("resume_id")) for x in resume_items if x.get("resume_id")]
+        resume_base_map = _fetch_resume_base_map(db, resume_ids)
+        merged_resume_items = _merge_resume_ranked_with_resume_base(resume_items, resume_base_map)
 
-                # From RESUME table (person_name/role/company/profile_url)
-                "profile_name": r.person_name,
-                "role": r.role,
-                "company": r.company,
-                "profile_url": r.profile_url,
-            }
-            resume_items.append(item)
+        # ---- 4. COMBINE AND ENRICH ----
+        combined = merged_web_items + merged_resume_items
 
-        combined = web_items + resume_items
-
-        # Re-enrich favorites defensively (no harm if already present)
+        # Re-enrich favorites (this function is safe and handles dicts)
         try:
             enriched = enrich_with_favorites(db, combined)
         except Exception as e:
@@ -428,23 +503,28 @@ async def get_combined_results(
                 it.setdefault("favorite", False)
                 enriched.append(it)
 
-        # Sort by match_score desc (missing scores last)
+        # ---- 5. SORT AND RETURN ----
         def score_val(x):
             ms = x.get("match_score")
             try:
+                # Handle potential Decimal type from DB
                 return float(ms) if ms is not None else -9999.0
             except Exception:
                 return -9999.0
 
         enriched_sorted = sorted(enriched, key=score_val, reverse=True)
+        
+        # Also fix datetimes to be JSON-serializable ISO strings
+        for item in enriched_sorted:
+            for key, val in item.items():
+                if isinstance(val, datetime):
+                    item[key] = val.isoformat()
+
         return enriched_sorted
 
     except Exception as e:
         logger.exception("Error while fetching combined results: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 
 
 # --- PRESERVED ENDPOINTS (Functionality Unchanged) ---

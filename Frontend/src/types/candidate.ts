@@ -33,37 +33,34 @@ export interface PipelineCandidate {
  * Fields returned from the backend API should map to this shape.
  */
 export interface Candidate {
-  // Unique identifier for the profile (from Supabase "search" table)
-  profile_id: string;
-
-  // The unique ID of the ranking entry in the ranked_candidates table.
+  // --- Common Ranked Fields ---
   rank_id: string;
-
-  // The numerical match score (may be null/undefined if not available)
   match_score: number | null;
-
-  // The detailed text summary from the ranking agent (strengths, weaknesses).
   strengths: string | null;
-
-  // The full name of the candidate (from Supabase search table).
-  profile_name: string | null;
-
-  // The candidate's job title.
-  role: string | null;
-
-  // The candidate's current company.
-  company: string | null;
-
-  // The URL to the candidate's profile (e.g., generated LinkedIn URL).
-  profile_url?: string | null;
+  favorite: boolean;
+  contacted: boolean;
+  stage: CandidateStage;
   linkedin_url?: string | null;
 
-  // Whether the candidate has been favorited (synchronized with backend).
-  favorite: boolean;
+  // --- Common Info Fields (in both 'search' and 'resume') ---
+  role: string | null;
+  company: string | null;
+  profile_url?: string | null;
 
-  // Whether the candidate has been contacted.
-  contacted: boolean;
+  // --- Web Search Fields (from 'search' table) ---
+  profile_id?: string; // <-- Must be optional
+  profile_name?: string | null; // <-- For web candidates
 
-  // The candidate's current stage in the pipeline (synchronized with backend).
-  stage: CandidateStage;
+  // --- Resume Fields (from 'resume' table) ---
+  resume_id?: string; // <-- Must be optional
+  person_name?: string | null; // <-- For resume candidates
+
+  // --- Fallback fields (if needed, good for safety) ---
+  name?: string | null;
+  full_name?: string | null;
+  current_title?: string | null;
+  title?: string | null;
+  current_company?: string | null;
+  organization_name?: string | null;
+  organization?: string | null;
 }
