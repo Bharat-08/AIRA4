@@ -1,14 +1,18 @@
-
 #!/usr/bin/env python3
 """
-google_linkedin.py — Interactive LinkedIn Candidate Sourcer (DuckDuckGo + Gemini)
+google_linkedin.py — LinkedIn Candidate Sourcer (DuckDuckGo + Gemini, AI-only parsing)
 
-Features:
-- Prompts for jd_id and validates it exists in 'jds' (lowercase) table in Supabase.
-- Uses site:linkedin.com/in queries to prioritize personal profiles.
-- Tries python supabase client first; falls back to Supabase REST.
-- Saves collected profiles to public.linkedin, skipping duplicates by profile_link.
-- Works in DRY_RUN mode if GEMINI API key / google-genai SDK is not available.
+This version:
+- Fetches JD by jd_id from public.jds.
+- Uses Gemini to extract search facets AND to parse LinkedIn search results (name/position/company/summary).
+- Adds robust retry/backoff for Gemini 429/5xx (incl. 503 UNAVAILABLE) and model fallback (Gemini only).
+- No regex/hand parsing for profile fields (AI-only); URL normalization + query templating remain minimal.
+
+Env:
+  GEMINI_API_KEY (required)
+  MODEL_TO_USE (optional; default: gemini-2.5-pro)
+  SUPABASE_URL, SUPABASE_KEY, SUPABASE_USER_ID
+  OUTPUT_CSV (optional)
 """
 
 import os
@@ -19,42 +23,37 @@ import random
 import json
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+import requests
+from typing import List, Dict, Any, Optional
 
 load_dotenv()
 
 # -------------------- CONFIG --------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-DRY_RUN = False if GEMINI_API_KEY else True
-MODEL_TO_USE = os.getenv("MODEL_TO_USE", "gemini-2.5-pro")
+if not GEMINI_API_KEY:
+    raise SystemExit("❌ GEMINI_API_KEY is required. This script uses AI-only parsing and will not run without it.")
+
+PRIMARY_MODEL = os.getenv("MODEL_TO_USE", "gemini-2.5-pro").strip()
+FALLBACK_MODELS: List[str] = [m for m in [
+    PRIMARY_MODEL,
+    "gemini-2.0-flash",
+    "gemini-1.5-pro",
+] if m]
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 SUPABASE_USER_ID = os.getenv("SUPABASE_USER_ID", "")
-
 OUTPUT_CSV = os.getenv("OUTPUT_CSV", "filtered_candidates.csv")
-
-# JD sample — adjust or replace by reading actual JD content if needed
-JD = {
-    "role": "AI Engineer",
-    "location": "India",
-    "experience_text": "5-10 years",
-    "must_have_skills": ["Python", "TensorFlow", "PyTorch", "NLP"],
-    "nice_to_have": ["Spark", "Docker", "Kubernetes"],
-    "domains": ["LLM", "Generative AI", "Signal Processing"],
-}
 
 # Search tuning
 MAX_QUERIES = 6
-PAGES_PER_QUERY = int(os.getenv("PAGES_PER_QUERY", 2))  # increased to get more results
-RESULTS_PER_PAGE = int(os.getenv("RESULTS_PER_PAGE", 50))  # increased
+PAGES_PER_QUERY = int(os.getenv("PAGES_PER_QUERY", 2))
+RESULTS_PER_PAGE = int(os.getenv("RESULTS_PER_PAGE", 50))
 MIN_DELAY = 0.8
 MAX_DELAY = 1.6
 
-# -------------------- IMPORTS --------------------
-ddg_available = False
-ddg_obj_available = False
+# -------------------- SEARCH LIBS --------------------
 try:
-    # preferred: duckduckgo_search (returns more results in one call)
     from duckduckgo_search import ddg  # pip install duckduckgo_search
     ddg_available = True
 except Exception:
@@ -66,15 +65,154 @@ if not ddg_available:
         ddg_obj_available = True
     except Exception:
         ddg_obj_available = False
+else:
+    ddg_obj_available = False
 
-if not DRY_RUN:
+# -------------------- GEMINI --------------------
+from google import genai  # pip install google-genai
+from google.genai import errors as genai_errors
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+def _extract_first_json_block(text: str) -> str:
+    if not text:
+        return ""
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    return m.group(0) if m else text.strip()
+
+def genai_generate_with_retry(contents: List[Any], temperature: float = 0.2,
+                              max_retries: int = 6, base_delay: float = 1.0) -> Optional[str]:
+    """
+    Call Gemini with retries + fallback models. Returns .text (str) or None on failure.
+    Retries on 429/5xx and network-ish errors with exponential backoff + jitter.
+    """
+    attempt = 0
+    for model in FALLBACK_MODELS:
+        attempt = 0
+        while attempt <= max_retries:
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config={"temperature": temperature},
+                )
+                return getattr(resp, "text", None) or ""
+            except genai_errors.APIError as e:
+                status = getattr(e, "status_code", None) or getattr(e, "code", None)
+                msg = getattr(e, "message", str(e))
+                retryable = (status in RETRY_STATUS) or ("temporarily" in msg.lower()) or ("unavailable" in msg.lower())
+                attempt += 1
+                if retryable and attempt <= max_retries:
+                    sleep_s = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                    print(f"⚠️ Gemini {model} error ({status}): {msg}. Retry {attempt}/{max_retries} in {sleep_s:.1f}s ...")
+                    time.sleep(sleep_s)
+                    continue
+                else:
+                    print(f"❌ Gemini {model} failed (non-retryable or retries exhausted): {msg}")
+                    break
+            except Exception as e:
+                attempt += 1
+                if attempt <= max_retries:
+                    sleep_s = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                    print(f"⚠️ Gemini {model} exception: {e}. Retry {attempt}/{max_retries} in {sleep_s:.1f}s ...")
+                    time.sleep(sleep_s)
+                    continue
+                print(f"❌ Gemini {model} exception (retries exhausted): {e}")
+                break
+        print(f"➡️ Trying fallback model… (was {model})")
+    return None
+
+# --- AI: Extract JD facets for search (AI-only; no manual parsing) ---
+JD_FACETS_PROMPT = """
+You are an expert recruiter. Given a job description record (JSON), extract concise search facets
+to find candidates on LinkedIn.
+
+Return ONLY valid JSON:
+{
+  "role": "string|null",
+  "locations": ["string", ...],
+  "skills_must": ["string", ...],
+  "domains": ["string", ...],
+  "extra_title_keywords": ["string", ...]
+}
+
+Keep arrays short and practical (3–8 items each). Use nulls/empty arrays if unknown.
+"""
+
+def ai_extract_jd_facets(jd_row: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        "role": jd_row.get("role"),
+        "location": jd_row.get("location"),
+        "experience_required": jd_row.get("experience_required"),
+        "key_requirements": jd_row.get("key_requirements"),
+        "jd_parsed_summary": jd_row.get("jd_parsed_summary"),
+        "jd_text": jd_row.get("jd_text"),
+        "job_type": jd_row.get("job_type"),
+    }
+    text = json.dumps(payload, ensure_ascii=False)
+    resp_text = genai_generate_with_retry([JD_FACETS_PROMPT, text], temperature=0.1)
+    if not resp_text:
+        print("❌ Could not extract JD facets from AI.")
+        return {"role": None, "locations": [], "skills_must": [], "domains": [], "extra_title_keywords": []}
+    raw = _extract_first_json_block(resp_text)
     try:
-        from google import genai
-    except Exception as e:
-        print("⚠️ google-genai not found or unusable. Running in DRY_RUN mode.", e)
-        DRY_RUN = True
+        data = json.loads(raw)
+    except Exception:
+        data = {}
+    # normalize
+    def as_list(x):
+        if isinstance(x, list):
+            return [i for i in x if i]
+        return [x] if x else []
+    return {
+        "role": data.get("role"),
+        "locations": as_list(data.get("locations")),
+        "skills_must": as_list(data.get("skills_must")),
+        "domains": as_list(data.get("domains")),
+        "extra_title_keywords": as_list(data.get("extra_title_keywords")),
+    }
 
-# Supabase client fallback
+# --- AI: Parse LinkedIn search result (AI-only; no manual parsing rules) ---
+AI_PARSE_PROMPT = """
+You are an expert sourcer. Given a DuckDuckGo result's TITLE, SNIPPET, and URL
+for a LinkedIn page, extract clean structured fields.
+
+Return ONLY valid JSON:
+{
+  "is_candidate": true/false,
+  "name": "string|null",
+  "position": "string|null",
+  "company": "string|null",
+  "summary": "string|null"
+}
+
+Rules:
+- True only if it's likely a person's LinkedIn profile (not company/job page).
+- Do not include the word "LinkedIn" in any field.
+- If unsure, use nulls. Do not invent details.
+"""
+
+def ai_parse_profile(title: str, snippet: str, url: str) -> Dict[str, Any]:
+    payload = f"TITLE:\n{title}\n\nSNIPPET:\n{snippet}\n\nURL:\n{url}\n"
+    resp_text = genai_generate_with_retry([AI_PARSE_PROMPT, payload], temperature=0.2)
+    if not resp_text:
+        return {"is_candidate": False, "name": None, "position": None, "company": None, "summary": None}
+    raw = _extract_first_json_block(resp_text)
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {"is_candidate": False, "name": None, "position": None, "company": None, "summary": None}
+    return {
+        "is_candidate": bool(data.get("is_candidate", False)),
+        "name": data.get("name"),
+        "position": data.get("position"),
+        "company": data.get("company"),
+        "summary": data.get("summary"),
+    }
+
+# -------------------- SUPABASE --------------------
 use_supabase_client = False
 supabase_client = None
 try:
@@ -85,14 +223,7 @@ try:
 except Exception:
     use_supabase_client = False
 
-import requests
-
-# -------------------- SUPABASE HELPERS --------------------
 def supabase_get(table, filters=None, select="*"):
-    """
-    table: table name (no schema prefix) e.g., 'jds' or 'linkedin'
-    filters: dict of column -> value (exact equality)
-    """
     if use_supabase_client:
         try:
             q = supabase_client.table(table).select(select)
@@ -111,7 +242,6 @@ def supabase_get(table, filters=None, select="*"):
             params = {"select": select}
             if filters:
                 for k, v in filters.items():
-                    # supabase REST filter format: col = eq.value
                     params[k] = f"eq.{v}"
             resp = requests.get(url, headers=headers, params=params)
             if resp.ok:
@@ -124,7 +254,6 @@ def supabase_get(table, filters=None, select="*"):
             return []
 
 def supabase_insert(table, payload):
-    """payload: dict or list of dicts"""
     if use_supabase_client:
         try:
             res = supabase_client.table(table).insert(payload).execute()
@@ -151,64 +280,21 @@ def supabase_insert(table, payload):
             print("supabase REST INSERT error:", e)
             return None
 
-def check_jd_exists(jd_id):
-    """Check existence in 'jds' (lowercase) table."""
-    if not jd_id:
-        return False
-    rows = supabase_get("jds", filters={"jd_id": jd_id}, select="jd_id")
-    if rows:
-        return True
-    # fallback raw REST
-    try:
-        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        url = f"{SUPABASE_URL}/rest/v1/jds"
-        resp = requests.get(url, headers=headers, params={"select": "jd_id", "jd_id": f"eq.{jd_id}"})
-        if resp.ok and resp.json():
-            return True
-    except Exception:
-        pass
-    return False
+def get_jd_row(jd_id: str):
+    rows = supabase_get(
+        "jds",
+        filters={"jd_id": jd_id},
+        select="jd_id,user_id,file_url,location,job_type,experience_required,jd_parsed_summary,role,key_requirements,status,jd_text"
+    )
+    return rows[0] if rows else None
 
 def linkedin_exists(profile_link):
-    """Check if profile_link already present in public.linkedin"""
     if not profile_link:
         return False
     rows = supabase_get("linkedin", filters={"profile_link": profile_link}, select="linkedin_profile_id")
     return bool(rows)
 
-# -------------------- SEARCH HELPERS --------------------
-def generate_simple_queries(jd, max_q=MAX_QUERIES):
-    role = jd.get("role", "")
-    loc = jd.get("location", "")
-    exp = jd.get("experience_text", "")
-    domains = jd.get("domains", [])
-    must = jd.get("must_have_skills", [])
-    domain_chunk = " OR ".join(domains[:3]) if domains else ""
-    skill_chunk = " OR ".join(must[:4]) if must else ""
-
-    templates = [
-        'site:linkedin.com/in "{role}" {loc} {exp} ({domain_or_skills})',
-        'site:linkedin.com/in "{role}" {loc} {exp} ({skill_chunk})',
-        'site:linkedin.com/in {role} {loc} {domain_or_skills}',
-        'site:linkedin.com/in {role} {loc} {skill_chunk}',
-        'site:linkedin.com/in "{role}" {loc} ({skill_chunk})',
-    ]
-
-    qlist = []
-    for t in templates:
-        q = t.format(
-            role=role,
-            loc=loc,
-            exp=exp,
-            domain_or_skills=(domain_chunk or skill_chunk),
-            skill_chunk=skill_chunk,
-        ).strip()
-        if q not in qlist:
-            qlist.append(q)
-        if len(qlist) >= max_q:
-            break
-    return qlist
-
+# -------------------- URL HELPERS --------------------
 def normalize_link(url):
     if not url:
         return None
@@ -226,20 +312,73 @@ def extract_linkedin_from_result_item(item):
     url = item.get("href") or item.get("url") or item.get("link") or ""
     if not url:
         body = item.get("body") or item.get("snippet") or ""
-        m = re.search(r"https?://[^\s'\"]*linkedin\.com/[^\s'\"]+", body)
+        m = re.search(r"https?://[^\s'\"]*linkedin\.com/[^\s'\"]+", body or "")
         if m:
             url = m.group(0)
     return normalize_link(url)
 
-def jd_match_score(jd, title, snippet):
+def likely_profile_url(url):
+    if not url:
+        return False
+    low = url.lower()
+    bad = ["/pulse/", "/posts/", "/jobs/", "/company/", "/school/", "/groups/", "/events/"]
+    if any(b in low for b in bad):
+        return False
+    return "/in/" in low or "/pub/" in low or re.search(r"/profile/view", low)
+
+# -------------------- QUERY GENERATION --------------------
+def build_queries_from_facets(fx: dict, max_q=MAX_QUERIES):
+    role = (fx.get("role") or "").strip()
+    locs = fx.get("locations", [])
+    skills = fx.get("skills_must", [])
+    domains = fx.get("domains", [])
+    extras = fx.get("extra_title_keywords", [])
+
+    buckets = []
+    if domains: buckets.append(" OR ".join(domains[:3]))
+    if skills:  buckets.append(" OR ".join(skills[:4]))
+    if extras:  buckets.append(" OR ".join(extras[:3]))
+
+    loc_list = locs[:2] if locs else [""]
+    focus = [b for b in buckets if b][:2] or [""]
+
+    queries = []
+    for loc in loc_list:
+        for f in focus:
+            core = f' "{role}" {loc}'.strip()
+            q = f'site:linkedin.com/in {core} ({f})' if f else f'site:linkedin.com/in {core}'
+            q = re.sub(r"\s+", " ", q).strip()
+            if q and q not in queries:
+                queries.append(q)
+            if len(queries) >= max_q:
+                break
+        if len(queries) >= max_q:
+            break
+
+    if len(queries) < max_q:
+        base = f'site:linkedin.com/in "{role}"'
+        if locs:
+            for loc in loc_list:
+                q = f"{base} {loc}".strip()
+                if q not in queries:
+                    queries.append(q)
+                if len(queries) >= max_q:
+                    break
+        if len(queries) < max_q and base not in queries:
+            queries.append(base)
+
+    return queries[:max_q]
+
+# -------------------- RANKING (signal only) --------------------
+def jd_match_score_from_text(skills, domains, title, snippet):
     text = (title or "") + " " + (snippet or "")
     text = text.lower()
     score = 0
-    for s in jd.get("must_have_skills", []):
-        if s.lower() in text:
+    for s in (skills or []):
+        if s and s.lower() in text:
             score += 4
-    for d in jd.get("domains", []):
-        if d.lower() in text:
+    for d in (domains or []):
+        if d and d.lower() in text:
             score += 2
     return min(10, score)
 
@@ -248,68 +387,6 @@ def pretty_print_result(idx, title, snippet, url):
     short_snip = (snippet[:220] + "...") if snippet and len(snippet) > 220 else snippet
     print(f"   {short_snip}\n   {url}")
     print("-" * 100)
-
-def likely_profile_url(url):
-    """Quick early filter to reject obvious non-profile LinkedIn URLs."""
-    if not url:
-        return False
-    low = url.lower()
-    bad = ["/pulse/", "/posts/", "/jobs/", "/company/", "/school/", "/groups/", "/events/"]
-    if any(b in low for b in bad):
-        return False
-    # profile paths commonly contain /in/ or /pub/
-    return "/in/" in low or "/pub/" in low or re.search(r"/profile/view", low)
-
-# -------------------- GEMINI HELPERS --------------------
-def _extract_text_from_genai_response(resp):
-    if hasattr(resp, "text") and resp.text:
-        return resp.text
-    try:
-        if hasattr(resp, "candidates"):
-            cands = resp.candidates
-            if cands and hasattr(cands[0], "content"):
-                parts = getattr(cands[0].content[0], "text", None)
-                if parts:
-                    return parts
-        if hasattr(resp, "output") and resp.output:
-            out = resp.output
-            if isinstance(out, list) and len(out) > 0:
-                item = out[0]
-                if hasattr(item, "text"):
-                    return item.text
-    except Exception:
-        pass
-    return str(resp)
-
-def classify_with_gemini(client, model_name, title, snippet, url):
-    prompt = f"""
-You are an expert recruiter. Given a LinkedIn result's title, snippet, and URL,
-decide if it is an individual's LinkedIn profile (a person) or NOT (company, blog, job post, etc).
-Return ONLY JSON:
-{{"is_candidate": true/false, "reason": "one sentence"}}.
-
-Title: {title}
-Snippet: {snippet}
-URL: {url}
-"""
-    try:
-        resp = client.models.generate_content(model=model_name, contents=prompt)
-        text = _extract_text_from_genai_response(resp)
-        m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        parsed = json.loads(m.group(0)) if m else json.loads(text)
-        return {"is_candidate": bool(parsed.get("is_candidate", False)), "reason": parsed.get("reason", "")}
-    except Exception as e:
-        return {"is_candidate": False, "reason": f"gemini error: {e}"}
-
-def is_likely_candidate_heuristic(title, snippet, url):
-    text = (title or "") + (snippet or "") + (url or "")
-    text = text.lower()
-    bad_words = ["jobs", "careers", "blog", "company", "services", "products", "press", "apply"]
-    if any(w in text for w in bad_words):
-        return False
-    if "linkedin.com/in" in text or "linkedin.com/pub" in text:
-        return True
-    return any(k in text for k in ["engineer", "scientist", "developer", "researcher", "data", "ml", "ai"])
 
 def ask_user_continue():
     while True:
@@ -320,11 +397,8 @@ def ask_user_continue():
             return False
         print("Please answer y/n.")
 
-# -------------------- SAVE HELPERS --------------------
+# -------------------- SAVE --------------------
 def save_linkedin_rows(jd_id, user_id, candidates):
-    """
-    candidates: list of dicts with keys: url, title, snippet, score, reason, source_query
-    """
     inserted = []
     for c in candidates:
         profile_link = c.get("url")
@@ -334,162 +408,138 @@ def save_linkedin_rows(jd_id, user_id, candidates):
             print("Skipping existing profile:", profile_link)
             continue
 
-        name_guess = c.get("title") or ""
-        title_text = c.get("title") or ""
-        position = None
-        company = None
-
-        # Heuristic extraction: "Name - Position at Company" or "Position at Company - Name"
-        # We'll try to extract "Position at Company" if present
-        t = title_text
-        # search for " at <Company>"
-        m = re.search(r"(.+?) at ([^\|–\-]{2,80})", t, flags=re.IGNORECASE)
-        if m:
-            position = m.group(1).strip(" -|—")
-            company = m.group(2).strip()
-        else:
-            # fallback: use entire title as position
-            position = title_text
-
         payload = {
             "jd_id": jd_id,
             "user_id": user_id,
-            "name": name_guess,
+            "name": c.get("ai_name"),
             "profile_link": profile_link,
-            "position": position,
-            "company": company,
-            "summary": c.get("snippet") or "",
+            "position": c.get("ai_position"),
+            "company": c.get("ai_company"),
+            "summary": c.get("ai_summary") or "",
         }
         res = supabase_insert("linkedin", payload)
         if res:
             inserted.append(res)
-            print("Inserted:", profile_link)
+            print("Inserted:", profile_link, "|", payload["name"], "|", payload["position"], "|", payload["company"])
         else:
             print("Failed to insert:", profile_link)
     return inserted
 
 # -------------------- MAIN --------------------
 def run():
-    global DRY_RUN
-
     jd_id = input("Enter jd_id (uuid) to attach results to: ").strip()
     if not jd_id:
         print("No jd_id provided. Exiting.")
         return
 
-    print("Checking JD exists in database (table 'jds')...")
-    if not check_jd_exists(jd_id):
+    print("Fetching JD from 'public.jds'...")
+    jd_row = get_jd_row(jd_id)
+    if not jd_row:
         print("JD not found in 'jds'. Please confirm jd_id and try again.")
         return
-    print("JD found. Continuing...")
+
+    print("Asking AI to extract JD facets (role, locations, skills, domains, keywords)...")
+    facets = ai_extract_jd_facets(jd_row)
+    print("Facets:", json.dumps(facets, ensure_ascii=False))
+
+    queries = build_queries_from_facets(facets, max_q=MAX_QUERIES)
+    print(f"[+] Built {len(queries)} queries from AI facets.")
+    for i, q in enumerate(queries, 1):
+        print(f"  {i}. {q}")
 
     user_id = SUPABASE_USER_ID or input("SUPABASE_USER_ID not set in .env — enter your user_id: ").strip()
     if not user_id:
         print("No user id. Exiting.")
         return
 
-    queries = generate_simple_queries(JD)
-    print(f"[+] Will run {len(queries)} queries one by one.")
-    print(f"[+] DRY_RUN={DRY_RUN} | ddg_available={ddg_available} | ddgs_available={ddg_obj_available}")
+    print(f"[+] ddg_available={ddg_available} | ddgs_available={ddg_obj_available}")
 
-    client = None
-    if not DRY_RUN:
-        try:
-            client = genai.Client(api_key=GEMINI_API_KEY)
-        except Exception as e:
-            print("Gemini init failed:", e)
-            DRY_RUN = True
+    collected: Dict[str, Dict[str, Any]] = {}
 
-    collected = {}
+    try:
+        for qidx, q in enumerate(queries, start=1):
+            print(f"\n[Query {qidx}/{len(queries)}] {q}")
+            total = PAGES_PER_QUERY * RESULTS_PER_PAGE
 
-    for qidx, q in enumerate(queries, start=1):
-        print(f"\n[Query {qidx}/{len(queries)}] {q}")
-        total = PAGES_PER_QUERY * RESULTS_PER_PAGE
-        results = []
+            results = []
+            if ddg_available:
+                try:
+                    results = ddg(q, region="wt-wt", safesearch="Off", time=None, max_results=total)
+                except Exception as e:
+                    print("ddg() error:", e)
+            elif ddg_obj_available:
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(q, safesearch="Off", timelimit=None, max_results=total))
+                except Exception as e:
+                    print("DDGS error:", e)
+            else:
+                print("No DuckDuckGo search library available. Please install 'duckduckgo_search' or 'ddgs'.")
+                break
 
-        if ddg_available:
-            try:
-                # ddg returns list of dicts
-                results = ddg(q, region="wt-wt", safesearch="Off", time=None, max_results=total)
-            except Exception as e:
-                print("ddg() error:", e)
-        elif ddg_obj_available:
-            try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(q, safesearch="Off", timelimit=None, max_results=total))
-            except Exception as e:
-                print("DDGS error:", e)
-        else:
-            print("No DuckDuckGo search library available. Please install 'duckduckgo_search' or 'ddgs'.")
-            break
+            if not results:
+                print("No results found.")
+                if not ask_user_continue():
+                    break
+                continue
 
-        if not results:
-            print("No results found.")
+            idx = 0
+            for item in results:
+                title = item.get("title") or ""
+                snippet = item.get("body") or item.get("snippet") or ""
+                linkedin = extract_linkedin_from_result_item(item)
+                if not linkedin or "linkedin.com" not in linkedin:
+                    continue
+                if not likely_profile_url(linkedin):
+                    continue
+
+                canonical = linkedin.split("?")[0]
+                if canonical in collected:
+                    continue
+
+                idx += 1
+                pretty_print_result(idx, title, snippet, canonical)
+
+                parsed = ai_parse_profile(title, snippet, canonical)
+                print(f"    → AI is_candidate={parsed['is_candidate']} | name={parsed.get('name')} | pos={parsed.get('position')} | company={parsed.get('company')}")
+
+                if parsed.get("is_candidate", False):
+                    score = jd_match_score_from_text(facets.get("skills_must", []), facets.get("domains", []), title, snippet)
+                    collected[canonical] = {
+                        "url": canonical,
+                        "title": title,
+                        "snippet": snippet,
+                        "score": score,
+                        "reason": "ai-parse",
+                        "source_query": q,
+                        "ai_name": parsed.get("name"),
+                        "ai_position": parsed.get("position"),
+                        "ai_company": parsed.get("company"),
+                        "ai_summary": parsed.get("summary"),
+                    }
+                time.sleep(0.25)
+
+            print(f"  → Query done. {len(collected)} total candidates so far.")
             if not ask_user_continue():
                 break
-            continue
+            time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
-        idx = 0
-        for item in results:
-            title = item.get("title") or ""
-            snippet = item.get("body") or item.get("snippet") or ""
-            linkedin = extract_linkedin_from_result_item(item)
-            if not linkedin or "linkedin.com" not in linkedin:
-                continue
-            # quick early URL filter
-            if not likely_profile_url(linkedin):
-                # still allow some candidates if ddg returns /in/ but flagged earlier
-                continue
-
-            canonical = linkedin.split("?")[0]
-            if canonical in collected:
-                continue
-            idx += 1
-            pretty_print_result(idx, title, snippet, canonical)
-
-            # CLASSIFY
-            if not DRY_RUN and client:
-                cls = classify_with_gemini(client, MODEL_TO_USE, title, snippet, canonical)
-                is_cand, reason = cls["is_candidate"], cls["reason"]
-            else:
-                is_cand = is_likely_candidate_heuristic(title, snippet, canonical)
-                reason = "heuristic"
-
-            print(f"    → Classification: {is_cand} | reason: {reason}")
-
-            if is_cand:
-                score = jd_match_score(JD, title, snippet)
-                collected[canonical] = {
-                    "url": canonical,
-                    "title": title,
-                    "snippet": snippet,
-                    "score": score,
-                    "reason": reason,
-                    "source_query": q,
-                }
-            time.sleep(0.25)
-
-        print(f"  → Query done. {len(collected)} total candidates so far.")
-        if not ask_user_continue():
-            break
-        time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+    except KeyboardInterrupt:
+        print("\n⏹️ Interrupted by user.")
 
     if collected:
         ranked = sorted(collected.values(), key=lambda x: x["score"], reverse=True)
         with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
-                f, fieldnames=["score", "title", "url", "reason", "snippet", "source_query"]
+                f,
+                fieldnames=[
+                    "score","title","url","reason","snippet","source_query",
+                    "ai_name","ai_position","ai_company","ai_summary"
+                ]
             )
             writer.writeheader()
             for r in ranked:
-                writer.writerow({
-                    "score": r.get("score"),
-                    "title": r.get("title"),
-                    "url": r.get("url"),
-                    "reason": r.get("reason"),
-                    "snippet": r.get("snippet"),
-                    "source_query": r.get("source_query"),
-                })
+                writer.writerow(r)
         print(f"\n✅ Saved {len(ranked)} candidates to {OUTPUT_CSV}")
 
         print("\nSaving candidates into Supabase table public.linkedin ...")

@@ -72,16 +72,19 @@ const profileId =
   (candidate as any).id || // Keep this as a final fallback
   "";
 
+// --- FIX IS HERE ---
+// profileUrl should NOT fall back to linkedin_url
 const profileUrl =
   candidate.profile_url || // from 'search' OR 'resume'
   (candidate as any).validated_url || // This isn't in the schema, so leave as 'any'
-  candidate.linkedin_url ||
   "";
 
+// --- FIX IS HERE ---
+// linkedinUrl should NOT fall back to profile_url
+// It should only be a *real* linkedin_url or the newly generated one.
 const linkedinUrl =
   generatedUrl ||
   candidate.linkedin_url ||
-  candidate.profile_url ||
   "";
 
 const matchScorePct = Math.round(Number(candidate.match_score || 0));
@@ -94,15 +97,13 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
       .toUpperCase() || "C";
 
   const handleLinkedInClick = async () => {
-    if (linkedinUrl && !generatedUrl) {
-      // we already have a URL; open it
-      window.open(linkedinUrl, "_blank", "noopener,noreferrer");
-      return;
-    }
-    if (generatedUrl) {
-      window.open(generatedUrl, "_blank", "noopener,noreferrer");
-      return;
-    }
+    // This logic is now correct.
+    // The `renderLinkedInButton` function will only call this
+    // if `linkedinUrl` is empty (meaning no generatedUrl or candidate.linkedin_url).
+
+    // If a URL *does* exist, the `renderLinkedInButton` will render an <a> tag instead,
+    // so this onClick handler won't even be attached.
+
     if (!profileId || isGeneratingUrl) return;
 
     setIsGeneratingUrl(true);
@@ -112,8 +113,14 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
       const result = await generateLinkedInUrl(String(profileId));
       const newUrl = result.linkedin_url;
       if (!newUrl) throw new Error("API did not return a valid URL.");
+      
+      // Open the new URL
       window.open(newUrl, "_blank", "noopener,noreferrer");
+      
+      // Save to local state so the UI updates
       setGeneratedUrl(newUrl);
+      
+      // Update the parent component's state
       onUpdateCandidate({ ...(candidate as any), linkedin_url: newUrl } as Candidate);
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -125,6 +132,7 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
   };
 
   const renderLinkedInButton = () => {
+    // This logic is now correct because `linkedinUrl` is fixed.
     // if we already have a URL, render as link
     if (linkedinUrl) {
       return (
@@ -140,10 +148,13 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
       );
     }
 
+    // if `linkedinUrl` is empty, show the loading spinner or button
     if (isGeneratingUrl) {
       return <Loader2 size={18} className="animate-spin text-gray-500" />;
     }
 
+    // if `linkedinUrl` is empty and not loading, show the button
+    // that triggers the API call
     return (
       <button
         onClick={handleLinkedInClick}
@@ -253,6 +264,7 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
             <LinkIcon size={18} />
           </a>
 
+          {/* This function now renders the correct element */}
           {renderLinkedInButton()}
         </div>
 

@@ -1,9 +1,7 @@
-// frontend/src/pages/SearchPage.tsx
-
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Header } from '../components/layout/Header';
 import { CandidateRow } from '../components/ui/CandidateRow';
-import { Plus, UploadCloud, Search as SearchIcon, SendHorizonal, Bot, Eye, History, RefreshCw, XCircle } from 'lucide-react';
+import { Plus, UploadCloud, Search as SearchIcon, SendHorizonal, Eye, History, RefreshCw, XCircle } from 'lucide-react';
 import type { User } from '../types/user';
 import { uploadJdFile, uploadResumeFiles } from '../api/upload';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
@@ -17,11 +15,12 @@ import {
   getRankResumesResults,
   stopTask,
   toggleFavorite,
-  // NEW: helper to call the new apollo-search endpoint (will be added to frontend/src/api/search.ts next)
   startApolloSearchTask,
-  // NEW functions for the combined flow
   triggerCombinedSearch,
   getCombinedSearchResults,
+  // NEW: Google+LinkedIn task APIs
+  startGoogleLinkedinTask,
+  getGoogleLinkedinResults,
 } from '../api/search';
 
 import type { Candidate } from '../types/candidate';
@@ -34,13 +33,11 @@ const stableKey = (c: Candidate) => {
   return `fallback-${Math.random().toString(36).substring(2, 9)}`;
 };
 
-
-
 // Loader component (Unchanged)
 const Loader = () => (
   <svg className="animate-spin h-5 w-5 text-teal-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    <path className="opacity-75" fill="currentColor" d="M4 12a 8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 0 1 4 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
   </svg>
 );
 
@@ -72,8 +69,8 @@ export function SearchPage({ user }: { user: User }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
 
-  // Sourcing option can be 'db' or 'web' (unchanged)
-  const [sourcingOption, setSourcingOption] = useState<'web' | 'db'>('web');
+  // Sourcing option can be 'db', 'web', or 'gl' (Google+LinkedIn AI sourcing)
+  const [sourcingOption, setSourcingOption] = useState<'web' | 'db' | 'gl'>('web');
 
   // NEW: which web search mode (1 = Fast Apollo-only, 2 = Web + Apollo)
   const [webSearchOption, setWebSearchOption] = useState<number>(2);
@@ -279,16 +276,32 @@ export function SearchPage({ user }: { user: User }) {
     const search_start_time = new Date().toISOString();
 
     try {
+      // --- NEW BRANCH: Google+LinkedIn sourcing option (no resume upload) ---
+      if (sourcingOption === 'gl') {
+        // This task will insert rows into public.linkedin for this JD & user
+        const res = await startGoogleLinkedinTask(currentJd.jd_id, chatMessage || '');
+        const newTaskId =
+          (res as any)?.task_id ??
+          (res as any)?.taskId ??
+          (res as any)?.id ??
+          null;
+        if (!newTaskId) throw new Error('Failed to start Google+LinkedIn sourcing task.');
+        setTaskId(newTaskId);
+        taskStartedAtRef.current = Date.now();
+        setUploadStatus({ message: 'Google+LinkedIn sourcing started. We’ll let you know when it’s done.', type: 'success' });
+        // Note: This path does not display candidates directly since it populates public.linkedin.
+        // You can add a follow-up flow to rank/use these entries as needed.
+        setIsRankingLoading(true);
+        return;
+      }
+
       // If user has selected multiple resume files — preserve the old "Upload & rank" flow
-      // to handle multiple files (same as My Database behavior).
       if (resumeFiles && resumeFiles.length > 1) {
-        // Upload all resumes and then start the ranking pipeline for DB resumes
         await uploadResumeFiles(resumeFiles, currentJd.jd_id);
         setResumeFiles(null);
         if (resumeInputRef.current) resumeInputRef.current.value = "";
         setUploadStatus({ message: 'Resumes uploaded. Starting ranking...', type: 'success' });
 
-        // If user selected My Database sourcing option, start DB rank flow
         if (sourcingOption === 'db') {
           const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
           const newTaskId =
@@ -301,7 +314,6 @@ export function SearchPage({ user }: { user: User }) {
           taskStartedAtRef.current = Date.now();
           setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
         } else {
-          // WEB search path - start Apollo search (no file attached this time)
           const res = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
           const newTaskId =
             (res as any)?.task_id ??
@@ -309,14 +321,13 @@ export function SearchPage({ user }: { user: User }) {
             (res as any)?.id ??
             null;
           if (!newTaskId) throw new Error('Failed to start search task.');
-          // start combined polling behavior (no resume file attached to combined endpoint)
           combinedApolloTaskIdRef.current = newTaskId;
           combinedSinceRef.current = search_start_time;
           taskStartedAtRef.current = Date.now();
           setIsCombinedSearch(true);
           setUploadStatus({ message: 'Search task started. Checking for results...', type: 'success' });
         }
-        setIsRankingLoading(false); // the polling will drive the "loading" indicator if needed
+        setIsRankingLoading(false);
         return;
       }
 
@@ -325,7 +336,6 @@ export function SearchPage({ user }: { user: User }) {
       if (sourcingOption === 'web' && resumeFiles && resumeFiles.length === 1) {
         const file = resumeFiles[0];
         const res = await triggerCombinedSearch(currentJd.jd_id, chatMessage || '', webSearchOption, file);
-        // Expecting res to contain at least apollo_task_id
         const apolloTaskId =
           (res as any)?.apollo_task_id ??
           (res as any)?.apolloTaskId ??
@@ -333,27 +343,23 @@ export function SearchPage({ user }: { user: User }) {
           null;
 
         if (!apolloTaskId) {
-          // If backend didn't return apollo_task_id, fall back to starting apollo search separately
           const fallback = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
           combinedApolloTaskIdRef.current = fallback.task_id;
         } else {
           combinedApolloTaskIdRef.current = apolloTaskId;
         }
 
-        // store 'since' and flip combined flag — start polling loop
         combinedSinceRef.current = search_start_time;
         taskStartedAtRef.current = Date.now();
         setIsCombinedSearch(true);
         setResumeFiles(null);
         if (resumeInputRef.current) resumeInputRef.current.value = "";
         setUploadStatus({ message: 'Combined search started. Polling for incremental & final results...', type: 'success' });
-        // keep isRankingLoading true — poller will stop it
         return;
       }
 
       // default existing behavior:
       if (resumeFiles && resumeFiles.length > 0) {
-        // If we're here, resumeFiles.length === 1 but sourcingOption !== 'web' OR other fallback cases
         await uploadResumeFiles(resumeFiles, currentJd.jd_id);
         setResumeFiles(null);
         if (resumeInputRef.current) resumeInputRef.current.value = "";
@@ -361,7 +367,6 @@ export function SearchPage({ user }: { user: User }) {
       }
 
       if (sourcingOption === 'db') {
-        // chatMessage may be empty — that's OK for DB ranking
         const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
         const newTaskId =
           (res as any)?.task_id ??
@@ -373,8 +378,6 @@ export function SearchPage({ user }: { user: User }) {
         taskStartedAtRef.current = Date.now();
         setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
       } else {
-        // WEB search path: call the new apollo-search API so we can pass search_option
-        // 1 -> Fast (apollo_only), 2 -> Web + Apollo (apollo_and_web)
         const res = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
         const newTaskId =
           (res as any)?.task_id ??
@@ -382,7 +385,6 @@ export function SearchPage({ user }: { user: User }) {
           (res as any)?.id ??
           null;
         if (!newTaskId) throw new Error('Failed to start search task.');
-        // Use existing taskId-based polling for the regular (no-file) path
         setTaskId(newTaskId);
         taskStartedAtRef.current = Date.now();
         setUploadStatus({ message: 'Search task started. Checking for results...', type: 'success' });
@@ -395,7 +397,7 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // --- useEffect for polling (enhanced to support combined-search polling) ---
+  // --- useEffect for polling (enhanced to support combined-search and google-linkedin) ---
   useEffect(() => {
     const clearPolling = (ref: React.MutableRefObject<number | null> | null = null) => {
       if (ref && ref.current !== null) {
@@ -407,13 +409,11 @@ export function SearchPage({ user }: { user: User }) {
       }
     };
 
-    // If combined-search is active, run the combined polling loop
+    // Combined-search active?
     if (isCombinedSearch) {
-      // Ensure we have an apollo task id to watch; if not, we'll poll combined-results until timeout
       const apolloTaskId = combinedApolloTaskIdRef.current;
       const since = combinedSinceRef.current;
       if (!since) {
-        // nothing to do — defensive
         setIsCombinedSearch(false);
         setIsRankingLoading(false);
         return;
@@ -425,15 +425,12 @@ export function SearchPage({ user }: { user: User }) {
 
       const poller = async () => {
         try {
-          // 1) incremental combined results
           const combined = await getCombinedSearchResults(currentJd!.jd_id, since);
           if (Array.isArray(combined)) {
             setCandidates(combined);
-            // optimistic status update
             setUploadStatus({ message: `Found and ranked ${combined.length} candidates (partial).`, type: 'success' });
           }
 
-          // 2) check apollo status if we have one
           let apolloDone = false;
           if (apolloTaskId) {
             try {
@@ -442,18 +439,15 @@ export function SearchPage({ user }: { user: User }) {
               if (statusLower === 'completed' || statusLower === 'done' || statusLower === 'success') {
                 apolloDone = true;
               } else if (statusLower === 'failed' || statusLower === 'error') {
-                apolloDone = true; // treat failure as done to perform final fetch and stop polling
+                apolloDone = true;
                 setUploadStatus({ message: statusResp?.error || 'Search task failed.', type: 'error' });
               }
             } catch (err) {
-              // non-fatal; continue polling
               console.debug('Apollo task status poll error', err);
             }
           }
 
-          // stop conditions
           if (apolloDone || (Date.now() - startedAt) > overallTimeoutMs) {
-            // final fetch
             const final = await getCombinedSearchResults(currentJd!.jd_id, since);
             if (Array.isArray(final)) {
               setCandidates(final);
@@ -462,7 +456,6 @@ export function SearchPage({ user }: { user: User }) {
               setUploadStatus({ message: 'No final candidates found.', type: 'error' });
             }
 
-            // cleanup
             setIsCombinedSearch(false);
             setIsRankingLoading(false);
             combinedApolloTaskIdRef.current = null;
@@ -475,7 +468,6 @@ export function SearchPage({ user }: { user: User }) {
           }
         } catch (err) {
           console.warn('Error while polling combined results', err);
-          // keep polling — but consider stopping after a longer retry count
           if ((Date.now() - startedAt) > overallTimeoutMs) {
             setIsCombinedSearch(false);
             setIsRankingLoading(false);
@@ -493,7 +485,6 @@ export function SearchPage({ user }: { user: User }) {
       poller();
       combinedPollingIntervalRef.current = window.setInterval(poller, pollIntervalMs);
 
-      // cleanup when effect re-runs or unmounts
       return () => {
         if (combinedPollingIntervalRef.current !== null) {
           clearInterval(combinedPollingIntervalRef.current);
@@ -511,10 +502,8 @@ export function SearchPage({ user }: { user: User }) {
 
     const pollOnce = async () => {
       try {
-        // enforce client-side timeout
         const started = taskStartedAtRef.current ?? Date.now();
         if (Date.now() - started > TASK_POLLING_TIMEOUT_MS) {
-          // Timeout reached — stop polling and report timeout to user
           if (pollingIntervalRef.current !== null) {
             clearInterval(pollingIntervalRef.current);
             pollingIntervalRef.current = null;
@@ -523,16 +512,45 @@ export function SearchPage({ user }: { user: User }) {
           setTaskId(null);
           taskStartedAtRef.current = null;
           setUploadStatus({ message: 'Polling timed out after 15 minutes.', type: 'error' });
-          // attempt to cancel server task
           try { await stopTask(taskId); } catch (e) { /* ignore */ }
           return;
         }
 
         let resp: any = null;
+
         if (sourcingOption === 'db') {
           resp = await getRankResumesResults(taskId);
-        } else {
+        } else if (sourcingOption === 'web') {
           resp = await getSearchResults(taskId);
+        } else if (sourcingOption === 'gl') {
+          // Poll the Google+LinkedIn task status
+          resp = await getGoogleLinkedinResults(taskId);
+          const statusLower = (resp?.status || '').toString().toLowerCase();
+          if (statusLower === 'completed') {
+            const inserted = resp?.inserted_count ?? 0;
+            setUploadStatus({ message: `Google+LinkedIn sourcing completed. Inserted ${inserted} profile(s) into LinkedIn table.`, type: 'success' });
+            setIsRankingLoading(false);
+            setTaskId(null);
+            taskStartedAtRef.current = null;
+            if (pollingIntervalRef.current !== null) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+            return;
+          }
+          if (statusLower === 'failed') {
+            setUploadStatus({ message: resp?.error || 'Google+LinkedIn sourcing failed.', type: 'error' });
+            setIsRankingLoading(false);
+            setTaskId(null);
+            taskStartedAtRef.current = null;
+            if (pollingIntervalRef.current !== null) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+            return;
+          }
+          // if 'processing', just continue polling
+          return;
         }
 
         const status = resp?.status?.toLowerCase?.() || resp?.state?.toLowerCase?.() || '';
@@ -587,7 +605,6 @@ export function SearchPage({ user }: { user: User }) {
   // --- handleStopSearch ---
   const handleStopSearch = async () => {
     try {
-      // Stop any task by id (existing behavior)
       if (taskId) {
         try {
           await stopTask(taskId);
@@ -596,7 +613,6 @@ export function SearchPage({ user }: { user: User }) {
         }
       }
 
-      // If combined polling is active, just cancel it and try to cancel the apollo task too
       if (isCombinedSearch) {
         const apolloTaskId = combinedApolloTaskIdRef.current;
         if (apolloTaskId) {
@@ -636,14 +652,12 @@ export function SearchPage({ user }: { user: User }) {
   };
 
   const handleCandidateNameClick = (candidate: Candidate) => {
-    // open popup for candidate
     setSelectedCandidate(candidate);
   };
 
   const handleCloseCandidatePopup = () => {
     setSelectedCandidate(null);
   };
-
 
   const getMainActionButton = () => {
     if (isRankingLoading) {
@@ -656,7 +670,10 @@ export function SearchPage({ user }: { user: User }) {
         </button>
       );
     }
-    const buttonText = sourcingOption === 'db' ? 'Rank' : 'Search and Rank';
+    // Button text varies by sourcing option
+    let buttonText = 'Search and Rank';
+    if (sourcingOption === 'db') buttonText = 'Rank';
+    if (sourcingOption === 'gl') buttonText = 'Start Sourcing';
     return (
       <button
         onClick={handleSearchAndRank}
@@ -668,12 +685,13 @@ export function SearchPage({ user }: { user: User }) {
     );
   };
 
-
   // dynamic helper text shown above candidate list
   const helperText = (() => {
     if (isRankingLoading) return '';
     if (sourcingOption === 'db') {
       return candidates.length > 0 ? `Found and ranked ${candidates.length} candidates.` : "Select 'My Database' and click 'Rank' to rank candidates from your database.";
+    } else if (sourcingOption === 'gl') {
+      return "This will source LinkedIn profiles with AI and add them to the LinkedIn table for this JD. You can process or use them later.";
     } else {
       return candidates.length > 0 ? `Found and ranked ${candidates.length} candidates.` : "Enter a prompt and click 'Search and Rank' to find candidates. Choose Fast or Web+Apollo.";
     }
@@ -699,9 +717,7 @@ export function SearchPage({ user }: { user: User }) {
 
     try {
       await toggleFavorite(candidateId, source, newFavorite);
-      // backend returned ok; state already reflects it
     } catch (err) {
-      // rollback on error
       console.warn('toggleFavorite failed', err);
       setCandidates(prev =>
         prev.map(c => {
@@ -764,6 +780,7 @@ export function SearchPage({ user }: { user: User }) {
                 </button>
               </div>
             </div>
+
             {/* --- START: SOURCING OPTIONS --- */}
             <div className="p-4 bg-white rounded-lg border border-gray-200 flex-shrink-0">
               <h3 className="font-semibold text-gray-700 mb-3">Sourcing Options</h3>
@@ -786,12 +803,22 @@ export function SearchPage({ user }: { user: User }) {
                     onChange={() => setSourcingOption('web')}
                   /> Web Search
                 </label>
+                {/* NEW OPTION:LinkedIn (AI) */}
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="sourcing"
+                    value="gl"
+                    checked={sourcingOption === 'gl'}
+                    onChange={() => setSourcingOption('gl')}
+                  /> LinkedIn
+                </label>
                 <label className="flex items-center gap-2 text-gray-400">
                   <input type="radio" name="sourcing" value="both" disabled /> Both (Coming Soon)
                 </label>
               </div>
 
-              {/* NEW: When 'Web Search' is selected, offer two modes */}
+              {/* Web Search modes only for 'web' option */}
               {sourcingOption === 'web' && (
                 <div className="mt-4 p-3 bg-gray-50 rounded-md border border-gray-100 text-sm">
                   <div className="font-medium mb-2">Web Sourcing Mode</div>
@@ -816,7 +843,7 @@ export function SearchPage({ user }: { user: User }) {
                     Web search + Apollo (comprehensive)
                   </label>
                   <p className="mt-2 text-xs text-gray-500">
-                    Fast = structured Apollo API searches (fewer sources, quicker). Web+Apollo = broader web discovery plus Apollo.
+                    Fast = structured Apollo API searches (quicker). Web+Apollo = broader web discovery plus Apollo.
                   </p>
                 </div>
               )}
@@ -829,7 +856,9 @@ export function SearchPage({ user }: { user: User }) {
               </button>
               <input type="file" ref={resumeInputRef} onChange={handleResumeFilesChange} className="hidden" accept=".pdf,.docx,.txt" multiple />
             </div>
+
             {getMainActionButton()}
+
             {uploadStatus && (
               <div className={`mt-4 p-3 rounded-md text-sm text-center flex-shrink-0 ${uploadStatus.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
                 {uploadStatus.message}
@@ -846,7 +875,7 @@ export function SearchPage({ user }: { user: User }) {
                   {isRankingLoading && (
                     <div className="flex items-center gap-2 text-sm text-teal-600">
                       <Loader />
-                      <span>Searching & Ranking...</span>
+                      <span>Processing...</span>
                     </div>
                   )}
                 </div>
@@ -874,7 +903,6 @@ export function SearchPage({ user }: { user: User }) {
                     source={(candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'}
                   />
                 ))}
-
               </div>
             </div>
 
@@ -883,7 +911,9 @@ export function SearchPage({ user }: { user: User }) {
                 {hasSearched && (
                   <div className="self-end">
                     <div className="p-3 text-sm rounded-lg bg-green-100 text-green-800">
-                      Okay, filtering for candidates... Here are the top results.
+                      {sourcingOption === 'gl'
+                        ? 'Okay, sourcing LinkedIn profiles for this JD...'
+                        : 'Okay, filtering for candidates... Here are the top results.'}
                     </div>
                   </div>
                 )}
@@ -894,7 +924,13 @@ export function SearchPage({ user }: { user: User }) {
                   type="text"
                   value={chatMessage}
                   onChange={(e) => setChatMessage(e.target.value)}
-                  placeholder={sourcingOption === 'db' ? 'Disabled for My Database' : 'Chat with AIRA... (optional)'}
+                  placeholder={
+                    sourcingOption === 'db'
+                      ? 'Disabled for My Database'
+                      : (sourcingOption === 'gl'
+                          ? 'Optional notes for sourcing (kept simple)'
+                          : 'Chat with AIRA... (optional)')
+                  }
                   className="w-full pl-4 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
                   onKeyDown={(e) => e.key === 'Enter' && !isRankingLoading && sourcingOption !== 'db' && handleSearchAndRank()}
                   disabled={isRankingLoading || sourcingOption === 'db'}
@@ -910,7 +946,7 @@ export function SearchPage({ user }: { user: User }) {
 
               </div>
 
-              {hasSearched && !isRankingLoading && (
+              {hasSearched && !isRankingLoading && sourcingOption !== 'gl' && (
                 <div className="flex justify-end pt-4">
                   <button
                     onClick={handleSearchAndRank}

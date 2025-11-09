@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Header } from '../components/layout/Header';
 import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight } from 'lucide-react';
@@ -7,12 +7,18 @@ import type { User } from '../types/user';
 // --- NEW IMPORTS ---
 import { getRankedCandidatesForJd, updateCandidateStage, updateCandidateFavoriteStatus } from '../api/pipeline';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
+// candidateStages is imported and will be used for the stage filter
 import { candidateStages, type Candidate, type CandidateStage } from '../types/candidate';
 
 // A type for our local state, combining backend data + local UI stage
 type PipelineDisplayCandidate = Candidate & { stage: CandidateStage };
 
-// --- "All Candidates" Row ---
+// --- NEW: Filter State Types ---
+type StatusFilter = 'all' | 'favorite' | 'contacted';
+type StageFilter = 'all' | CandidateStage;
+
+
+// --- "All Candidates" Row (Unchanged) ---
 const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => {
   const avatarInitial = candidate.profile_name?.split(' ').map(n => n[0]).join('').toUpperCase() || '??';
 
@@ -51,7 +57,7 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => 
   );
 };
 
-// --- "Role Pipeline" Row (now accepts favorite handler) ---
+// --- "Role Pipeline" Row (Unchanged from your last version) ---
 const PipelineCandidateRow: React.FC<{
   candidate: PipelineDisplayCandidate;
   onStageChange: (id: string, newStage: CandidateStage) => void;
@@ -95,7 +101,11 @@ const PipelineCandidateRow: React.FC<{
       <div className="col-span-2">
         <select
           value={candidate.stage}
-          onChange={(e) => onStageChange(candidate.profile_id, e.target.value as CandidateStage)}
+          onChange={(e) => {
+            if (candidate.profile_id) {
+              onStageChange(candidate.profile_id, e.target.value as CandidateStage)
+            }
+          }}
           className="w-full p-1.5 border-none rounded-md bg-slate-100 text-slate-700 text-xs focus:ring-2 focus:ring-teal-500 appearance-none text-left"
         >
           {candidateStages.map(stage => (<option key={stage} value={stage}>{stage}</option>))}
@@ -105,7 +115,11 @@ const PipelineCandidateRow: React.FC<{
       <div className="col-span-2 flex items-center gap-4 text-slate-400">
         {/* Favorite star */}
         <button
-          onClick={() => onFavoriteToggle(candidate.profile_id)}
+          onClick={() => {
+            if (candidate.profile_id) {
+              onFavoriteToggle(candidate.profile_id)
+            }
+          }}
           aria-label={candidate.favorite ? 'Unfavorite candidate' : 'Favorite candidate'}
           className="p-1"
           title={candidate.favorite ? 'Unfavorite' : 'Favorite'}
@@ -132,10 +146,20 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const [userJds, setUserJds] = useState<JdSummary[]>([]);
   const [selectedJdId, setSelectedJdId] = useState<string>('');
 
+  // --- UPDATED STATE for filtering ---
+  const [activeStatusFilter, setActiveStatusFilter] = useState<StatusFilter>('all');
+  const [activeStageFilter, setActiveStageFilter] = useState<StageFilter>('all');
+  const [showStageDropdown, setShowStageDropdown] = useState(false);
+
+
   // Load JDs and candidates
   useEffect(() => {
     const loadJdsAndCandidates = async () => {
       setIsLoading(true);
+      // Reset filters on load
+      setActiveStatusFilter('all'); 
+      setActiveStageFilter('all');
+      setShowStageDropdown(false);
       try {
         const jds = await fetchJdsForUser();
         setUserJds(jds);
@@ -163,6 +187,11 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const handleJdSelectionChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newJdId = e.target.value;
     setSelectedJdId(newJdId);
+    
+    // Reset filters on JD change
+    setActiveStatusFilter('all');
+    setActiveStageFilter('all');
+    setShowStageDropdown(false);
 
     if (!newJdId) {
       setCandidates([]);
@@ -203,29 +232,69 @@ export const PipelinePage = ({ user }: { user: User }) => {
   };
 
   // Favorite toggle (uses existing backend API)
-  // Favorite toggle (uses existing backend API)
-const handleFavoriteToggle = async (profileId: string) => {
-  // find candidate by profile_id
-  const candidate = candidates.find(c => c.profile_id === profileId);
-  if (!candidate) return;
+  const handleFavoriteToggle = async (profileId: string) => {
+    // find candidate by profile_id
+    const candidate = candidates.find(c => c.profile_id === profileId);
+    if (!candidate) return;
 
-  const oldFavorite = candidate.favorite;
-  const newFavorite = !oldFavorite;
+    const oldFavorite = candidate.favorite;
+    const newFavorite = !oldFavorite;
 
-  // Optimistic UI update
-  setCandidates(prev => prev.map(c => c.profile_id === profileId ? { ...c, favorite: newFavorite } : c));
+    // Optimistic UI update
+    setCandidates(prev => prev.map(c => c.profile_id === profileId ? { ...c, favorite: newFavorite } : c));
 
   try {
-    // IMPORTANT: the favorites endpoint expects the candidate_id to be the profile_id
-    // (not the ranked_candidates.rank_id). So pass profile_id and source 'ranked_candidates'.
-    await updateCandidateFavoriteStatus(profileId, newFavorite);
-    console.log(`Favorite toggled for ${profileId}: ${newFavorite}`);
-  } catch (err) {
-    console.error('Failed to toggle favorite:', err);
-    // Roll back optimistic change on failure
-    setCandidates(prev => prev.map(c => c.profile_id === profileId ? { ...c, favorite: oldFavorite } : c));
-  }
-};
+      // IMPORTANT: the favorites endpoint expects the candidate_id to be the profile_id
+      // (not the ranked_candidates.rank_id). So pass profile_id and source 'ranked_candidates'.
+      await updateCandidateFavoriteStatus(profileId, newFavorite);
+      console.log(`Favorite toggled for ${profileId}: ${newFavorite}`);
+    } catch (err) {
+      console.error('Failed to toggle favorite:', err);
+      // Roll back optimistic change on failure
+      setCandidates(prev => prev.map(c => c.profile_id === profileId ? { ...c, favorite: oldFavorite } : c));
+    }
+  };
+
+  // --- Calculate counts for filter buttons ---
+  const favoritedCount = useMemo(() =>
+    candidates.filter(c => c.favorite).length
+  , [candidates]);
+
+  const contactedCount = useMemo(() =>
+    // The 'contacted' field comes from the backend
+    candidates.filter(c => c.contacted).length
+  , [candidates]);
+
+
+  // --- UPDATED: Create filtered list of candidates based on COMBINED filters ---
+  const filteredCandidates = useMemo(() => {
+    let tempCandidates = [...candidates];
+
+    // 1. Apply Status Filter
+    if (activeStatusFilter === 'favorite') {
+      tempCandidates = tempCandidates.filter(c => c.favorite);
+    } else if (activeStatusFilter === 'contacted') {
+      tempCandidates = tempCandidates.filter(c => c.contacted);
+    }
+    // 'all' does nothing
+
+    // 2. Apply Stage Filter (to the already status-filtered list)
+    if (activeStageFilter !== 'all') {
+      tempCandidates = tempCandidates.filter(c => c.stage === activeStageFilter);
+    }
+
+    return tempCandidates;
+
+  }, [candidates, activeStatusFilter, activeStageFilter]);
+
+  // --- Helper to get button class ---
+  const getFilterButtonClass = (isActive: boolean) => {
+    return `px-3 py-1.5 rounded-md text-sm ${
+      isActive
+        ? 'bg-slate-100 font-semibold text-slate-800'
+        : 'text-slate-600 hover:bg-slate-100'
+    }`;
+  };
 
 
   return (
@@ -264,12 +333,87 @@ const handleFavoriteToggle = async (profileId: string) => {
                    </div>
                  </div>
                </div>
+
+               {/* --- UPDATED: Filter buttons --- */}
                <div className="flex items-center gap-2 border-b border-slate-200 pb-3 mb-3 text-sm">
-                 <button className="px-3 py-1.5 rounded-md bg-slate-100 font-semibold text-slate-800">All</button>
-                 <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Favourited (5)</button>
-                 <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Contacted (5)</button>
-                 <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100 flex items-center gap-1">Stage <ChevronDown size={16}/></button>
+                 <button
+                   className={getFilterButtonClass(activeStatusFilter === 'all')}
+                   onClick={() => {
+                     setActiveStatusFilter('all');
+                     // Note: We no longer reset the stage filter here
+                     // setShowStageDropdown(false); // This is also not needed here
+                   }}
+                 >
+                   All
+                 </button>
+                 <button
+                   className={getFilterButtonClass(activeStatusFilter === 'favorite')}
+                   onClick={() => {
+                     setActiveStatusFilter('favorite');
+                     // setShowStageDropdown(false);
+                   }}
+                 >
+                   Favourited ({favoritedCount})
+                 </button>
+                 <button
+                   className={getFilterButtonClass(activeStatusFilter === 'contacted')}
+                   onClick={() => {
+                     setActiveStatusFilter('contacted');
+                     // setShowStageDropdown(false);
+                   }}
+                 >
+                   Contacted ({contactedCount})
+                 </button>
+                 
+                 {/* Stage Dropdown Button */}
+                 <div className="relative">
+                   <button
+                     className={getFilterButtonClass(activeStageFilter !== 'all') + ' flex items-center gap-1'}
+                     onClick={() => setShowStageDropdown(prev => !prev)}
+                   >
+                     {activeStageFilter !== 'all' ? activeStageFilter : 'Stage'}
+                     <ChevronDown size={16}/>
+                   </button>
+                   
+                   {/* Stage Dropdown Menu */}
+                   {showStageDropdown && (
+                     <div className="absolute top-full left-0 mt-1.5 w-48 bg-white border border-slate-200 rounded-md shadow-lg z-10 py-1">
+                       {/* Add "All Stages" option */}
+                       <button
+                           className={`w-full text-left px-3 py-1.5 text-sm ${
+                             activeStageFilter === 'all'
+                               ? 'bg-teal-50 text-teal-700 font-semibold'
+                               : 'text-slate-700 hover:bg-slate-50'
+                           }`}
+                           onClick={() => {
+                             setActiveStageFilter('all');
+                             setShowStageDropdown(false);
+                           }}
+                         >
+                           All Stages
+                         </button>
+                       {candidateStages.map(stage => (
+                         <button
+                           key={stage}
+                           className={`w-full text-left px-3 py-1.5 text-sm ${
+                             activeStageFilter === stage
+                               ? 'bg-teal-50 text-teal-700 font-semibold'
+                               : 'text-slate-700 hover:bg-slate-50'
+                           }`}
+                           onClick={() => {
+                             setActiveStageFilter(stage);
+                             setShowStageDropdown(false);
+                           }}
+                         >
+                           {stage}
+                         </button>
+                       ))}
+                     </div>
+                   )}
+                 </div>
                </div>
+
+               {/* --- UPDATED: Candidates Table --- */}
                <div className="candidates-table">
                  <div className="grid grid-cols-12 text-xs font-semibold text-slate-600 uppercase py-3 px-2 bg-slate-50 border-b border-slate-200">
                    <div className="col-span-1"></div><div className="col-span-4">Name</div><div className="col-span-2">Status</div><div className="col-span-1">Profile Link</div><div className="col-span-2">Stage</div><div className="col-span-2">Actions</div>
@@ -278,8 +422,12 @@ const handleFavoriteToggle = async (profileId: string) => {
                    {isLoading ? (<p className="text-center py-8 text-slate-500">Loading candidates...</p>) : (
                      candidates.length === 0 ? (
                        <p className="text-center py-8 text-slate-500">No candidates found for this role.</p>
+                     ) : filteredCandidates.length === 0 ? (
+                       // New message for when filters match no candidates
+                       <p className="text-center py-8 text-slate-500">No candidates match the current filters.</p>
                      ) : (
-                       candidates.map(candidate => (
+                       // Render the filtered list
+                       filteredCandidates.map(candidate => (
                          <PipelineCandidateRow 
                            key={candidate.profile_id} 
                            candidate={candidate} 
@@ -302,6 +450,7 @@ const handleFavoriteToggle = async (profileId: string) => {
              </>
           ) : (
             <>
+              {/* --- All Candidates tab content (unchanged) --- */}
               <div className="relative mb-4">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                 <input 
@@ -328,10 +477,19 @@ const handleFavoriteToggle = async (profileId: string) => {
                   <div className="col-span-2">Actions</div>
                 </div>
                 <div className="max-h-[60vh] overflow-y-auto">
+                  {/* Note: This 'All Candidates' tab still uses the main 'candidates' list,
+                    which is loaded based on the selected JD. You may want to implement
+                    a separate data fetching logic for this tab if it's supposed to show
+                    *all* candidates regardless of JD.
+                  */}
                   {isLoading ? (<p className="text-center py-8 text-slate-500">Loading candidates...</p>) : (
                     candidates.length === 0 ? (
                       <p className="text-center py-8 text-slate-500">No candidates found for this role.</p>
                     ) : (
+                      // This tab still renders the *unfiltered* list.
+                      // You might want this to render `filteredCandidates` as well,
+                      // or implement a separate filter state for this tab.
+                      // For now, it remains as it was.
                       candidates.map(candidate => (
                         <AllCandidatesRow key={candidate.profile_id} candidate={candidate}/>
                       ))

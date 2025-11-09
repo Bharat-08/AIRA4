@@ -19,6 +19,7 @@ from app.worker import (
     rank_resumes_task,
     apollo_search_task,
     process_single_uploaded_resume_task,  # NEW: background task to handle a single uploaded resume
+    google_linkedin_task,                 # NEW: Google+LinkedIn sourcing task
 )
 # --- END: CELERY IMPORTS ---
 
@@ -35,13 +36,16 @@ from app.models.candidate import RankedCandidate, RankedCandidateFromResume
 # LinkedIn finder
 from ..services.linkedin_finder_service import LinkedInFinder
 
+
 # --- MODELS (Unchanged) ---
 class SearchRequest(BaseModel):
     jd_id: str
     prompt: str
 
+
 class LinkedInRequest(BaseModel):
     profile_id: str
+
 
 # --- NEW: Apollo Search Request Model ---
 class ApolloSearchRequest(BaseModel):
@@ -53,6 +57,7 @@ class ApolloSearchRequest(BaseModel):
     search_option: int
     prompt: Optional[str] = None
 
+
 # --- ROUTER SETUP ---
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -60,7 +65,7 @@ linkedin_finder_agent = LinkedInFinder()
 
 
 def _extract_id_values(candidates: Iterable[Any], id_key_candidates: List[str]) -> List[str]:
-    out = []
+    out: List[str] = []
     for c in candidates:
         val = None
         if isinstance(c, dict):
@@ -89,20 +94,20 @@ def enrich_with_favorites(db: Session, candidates: Iterable[Any]) -> List[Dict]:
     profile_ids = set(_extract_id_values(candidates_list, ["profile_id", "id", "profileId"]))
     resume_ids = set(_extract_id_values(candidates_list, ["resume_id", "resumeId"]))
 
-    fav_by_profile = {}
-    fav_by_resume = {}
+    fav_by_profile: Dict[str, bool] = {}
+    fav_by_resume: Dict[str, bool] = {}
 
     if profile_ids:
-        rows = db.query(RankedCandidate.profile_id, RankedCandidate.favorite)\
+        rows = db.query(RankedCandidate.profile_id, RankedCandidate.favorite) \
                  .filter(RankedCandidate.profile_id.in_(list(profile_ids))).all()
         fav_by_profile = {str(r[0]): bool(r[1]) for r in rows}
 
     if resume_ids:
-        rows = db.query(RankedCandidateFromResume.resume_id, RankedCandidateFromResume.favorite)\
+        rows = db.query(RankedCandidateFromResume.resume_id, RankedCandidateFromResume.favorite) \
                  .filter(RankedCandidateFromResume.resume_id.in_(list(resume_ids))).all()
         fav_by_resume = {str(r[0]): bool(r[1]) for r in rows}
 
-    enriched = []
+    enriched: List[Dict] = []
     for c in candidates_list:
         # produce a mutable dict representation
         if isinstance(c, dict):
@@ -110,7 +115,7 @@ def enrich_with_favorites(db: Session, candidates: Iterable[Any]) -> List[Dict]:
         else:
             # Convert SQLAlchemy model to dict
             item = {col.name: getattr(c, col.name) for col in c.__table__.columns}
-            
+
             # Handle potential __dict__ attributes if not a pure ORM model (less ideal)
             if not item and hasattr(c, "__dict__"):
                 try:
@@ -144,9 +149,7 @@ def _fetch_search_base_map(db: Session, profile_ids: List[str]) -> Dict[str, Dic
     base: Dict[str, Dict[str, Any]] = {}
     if not profile_ids:
         return base
-    
-    # ===== FIX IS HERE =====
-    # Use a list, not a tuple
+
     profile_id_list = list(set(profile_ids))
     if not profile_id_list:
         return base
@@ -155,11 +158,10 @@ def _fetch_search_base_map(db: Session, profile_ids: List[str]) -> Dict[str, Dic
         text("""
             SELECT profile_id, profile_name, role, company, profile_url
             FROM public.search
-            WHERE profile_id = ANY(:pids) -- Use = ANY() for array parameter
-            """),
-        {"pids": profile_id_list}, # Pass the list
+            WHERE profile_id = ANY(:pids)
+        """),
+        {"pids": profile_id_list},
     ).fetchall()
-    # ===== END FIX =====
 
     for row in rows:
         d = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
@@ -179,9 +181,7 @@ def _fetch_resume_base_map(db: Session, resume_ids: List[str]) -> Dict[str, Dict
     base: Dict[str, Dict[str, Any]] = {}
     if not resume_ids:
         return base
-    
-    # ===== FIX IS HERE =====
-    # Use a list, not a tuple
+
     resume_id_list = list(set(resume_ids))
     if not resume_id_list:
         return base
@@ -190,11 +190,10 @@ def _fetch_resume_base_map(db: Session, resume_ids: List[str]) -> Dict[str, Dict
         text("""
             SELECT resume_id, person_name, role, company, profile_url
             FROM public.resume
-            WHERE resume_id = ANY(:rids) -- Use = ANY() for array parameter
-            """),
-        {"rids": resume_id_list}, # Pass the list
+            WHERE resume_id = ANY(:rids)
+        """),
+        {"rids": resume_id_list},
     ).fetchall()
-    # ===== END FIX =====
 
     for row in rows:
         d = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
@@ -212,12 +211,11 @@ def _merge_web_ranked_with_search_base(items: List[Dict], base_map: Dict[str, Di
     for it in items:
         pid = str(it.get("profile_id")) if it.get("profile_id") else None
         base = base_map.get(pid or "", {})
-        # prefer base-table values; fall back to any existing fields
         it["profile_name"] = base.get("profile_name") or it.get("profile_name")
-        it["role"]        = base.get("role") or it.get("role")
-        it["company"]     = base.get("company") or it.get("company")
+        it["role"] = base.get("role") or it.get("role")
+        it["company"] = base.get("company") or it.get("company")
         it["profile_url"] = base.get("profile_url") or it.get("profile_url")
-        it["source"] = "web" # Add source for clarity
+        it["source"] = "web"
         merged.append(it)
     return merged
 
@@ -227,12 +225,11 @@ def _merge_resume_ranked_with_resume_base(items: List[Dict], base_map: Dict[str,
     for it in items:
         rid = str(it.get("resume_id")) if it.get("resume_id") else None
         base = base_map.get(rid or "", {})
-        # attach resume base fields
         it["person_name"] = base.get("person_name") or it.get("person_name")
-        it["role"]        = base.get("role") or it.get("role")
-        it["company"]     = base.get("company") or it.get("company")
+        it["role"] = base.get("role") or it.get("role")
+        it["company"] = base.get("company") or it.get("company")
         it["profile_url"] = base.get("profile_url") or it.get("profile_url")
-        it["source"] = "resume" # Add source for clarity
+        it["source"] = "resume"
         merged.append(it)
     return merged
 
@@ -305,13 +302,11 @@ async def get_search_results(task_id: str, db: Session = Depends(get_db)):
         enriched = enrich_with_favorites(db, result_items)
     except Exception as e:
         logger.exception("Failed to enrich search results with favorites: %s", e)
-        # Fallback for enrichment
         enriched = []
         for r in result_items:
             item = dict(r) if isinstance(r, dict) else {col.name: getattr(r, col.name) for col in r.__table__.columns}
             item.setdefault("favorite", False)
             enriched.append(item)
-
 
     # 2) base merge from public.search
     profile_ids = [str(x.get("profile_id")) for x in enriched if isinstance(x, dict) and x.get("profile_id")]
@@ -356,7 +351,6 @@ async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
         enriched = enrich_with_favorites(db, result_items)
     except Exception as e:
         logger.exception("Failed to enrich rank-resumes results with favorites: %s", e)
-        # Fallback for enrichment
         enriched = []
         for r in result_items:
             item = dict(r) if isinstance(r, dict) else {col.name: getattr(r, col.name) for col in r.__table__.columns}
@@ -387,7 +381,7 @@ async def trigger_combined_search(
       - process_single_uploaded_resume_task.delay(...)  (only if a file was provided)
     """
     user_id = str(current_user.id)
-    launched = {}
+    launched: Dict[str, str] = {}
     try:
         # Map search_option to search_mode string
         if search_option == 1:
@@ -456,7 +450,6 @@ async def get_combined_results(
             )
             .all()
         )
-        # Convert ORM models to simple dicts
         web_items = [
             {col.name: getattr(rc, col.name) for col in rc.__table__.columns}
             for rc in web_ranked_rows
@@ -471,20 +464,16 @@ async def get_combined_results(
             )
             .all()
         )
-        # Convert ORM models to simple dicts
         resume_items = [
             {col.name: getattr(rr, col.name) for col in rr.__table__.columns}
             for rr in resume_ranked_rows
         ]
 
         # ---- 3. MERGE BASE DATA (Name, Role, etc.) ----
-        
-        # Merge web data
         profile_ids = [str(x.get("profile_id")) for x in web_items if x.get("profile_id")]
         web_base_map = _fetch_search_base_map(db, profile_ids)
         merged_web_items = _merge_web_ranked_with_search_base(web_items, web_base_map)
-        
-        # Merge resume data
+
         resume_ids = [str(x.get("resume_id")) for x in resume_items if x.get("resume_id")]
         resume_base_map = _fetch_resume_base_map(db, resume_ids)
         merged_resume_items = _merge_resume_ranked_with_resume_base(resume_items, resume_base_map)
@@ -492,7 +481,7 @@ async def get_combined_results(
         # ---- 4. COMBINE AND ENRICH ----
         combined = merged_web_items + merged_resume_items
 
-        # Re-enrich favorites (this function is safe and handles dicts)
+        # Re-enrich favorites
         try:
             enriched = enrich_with_favorites(db, combined)
         except Exception as e:
@@ -507,14 +496,13 @@ async def get_combined_results(
         def score_val(x):
             ms = x.get("match_score")
             try:
-                # Handle potential Decimal type from DB
                 return float(ms) if ms is not None else -9999.0
             except Exception:
                 return -9999.0
 
         enriched_sorted = sorted(enriched, key=score_val, reverse=True)
-        
-        # Also fix datetimes to be JSON-serializable ISO strings
+
+        # JSON-serializable datetimes
         for item in enriched_sorted:
             for key, val in item.items():
                 if isinstance(val, datetime):
@@ -552,3 +540,62 @@ async def generate_linkedin_url(
     except Exception as e:
         logger.exception("An error occurred during LinkedIn URL generation: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================
+# NEW ENDPOINTS: GOOGLE + LINKEDIN SOURCING
+# (Top-level, no extra indentation)
+# =============================
+
+@router.post("/google-linkedin/{jd_id}", status_code=status.HTTP_202_ACCEPTED)
+async def start_google_linkedin_sourcing(
+    jd_id: str,
+    prompt: Optional[str] = Form(""),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Start the new Google+LinkedIn sourcing process using Celery.
+
+    - Fetches the JD from public.jds
+    - Uses Gemini to extract search facets
+    - Searches DuckDuckGo for LinkedIn profiles
+    - Inserts results into public.linkedin table
+    - Returns task_id for tracking
+
+    This endpoint:
+      - Does NOT use user_id from .env
+      - Uses the logged-in user (via get_current_user)
+      - Enqueues the Celery task google_linkedin_task
+    """
+    try:
+        user_id = str(current_user.id)
+        task = google_linkedin_task.delay(
+            jd_id=jd_id,
+            user_id=user_id,
+            custom_prompt=prompt or ""
+        )
+        return {"task_id": task.id, "status": "processing"}
+    except Exception as e:
+        logger.exception("Failed to start google_linkedin_task: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/google-linkedin/results/{task_id}")
+async def get_google_linkedin_results(task_id: str):
+    """
+    Retrieve the results of the Google+LinkedIn sourcing task.
+    """
+    task_result = AsyncResult(task_id, app=celery_app)
+
+    if not task_result.ready():
+        return {"status": "processing"}
+
+    payload = task_result.get()
+
+    if not task_result.successful():
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": "failed", "error": str(payload)}
+        )
+
+    return payload

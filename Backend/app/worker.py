@@ -16,6 +16,13 @@ except Exception:
 # Existing ranker imports
 from ranker import ProfileRanker, Config as RankerConfig
 
+# ✅ Import the non-interactive Google+LinkedIn sourcer (now exports run_sourcing alias)
+try:
+    from app.services.google_linkedin_sourcer import run_sourcing as run_google_linkedin_sourcing
+except Exception:
+    # Avoid bad fallback like "from services..." – keep package-qualified import only.
+    raise
+
 celery_app = Celery(
     "tasks",
     broker="redis://redis:6379/0",
@@ -139,16 +146,10 @@ def process_single_uploaded_resume_task(jd_id: str, file_contents: bytes, user_i
     """
     Celery task to process a single uploaded resume file (bytes), parse it,
     insert into the `resume` table and then kick off the resume-ranking task.
-
-    Expected inputs:
-      - jd_id: str (UUID string)
-      - file_contents: bytes (raw file bytes)
-      - user_id: str (UUID string)
     """
     logger = logging.getLogger(__name__)
     logger.info(f"process_single_uploaded_resume_task: start jd_id={jd_id} user_id={user_id}")
 
-    # Local imports to avoid import cycles and ensure runtime availability
     try:
         from app.services.resume_parsing_service import process_resume_file
         from app.dependencies import get_supabase_client
@@ -158,30 +159,23 @@ def process_single_uploaded_resume_task(jd_id: str, file_contents: bytes, user_i
 
     tmp_path = None
     try:
-        # write bytes to a temporary file (no original filename available here)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(file_contents)
             tmp.flush()
             tmp_path = tmp.name
 
         tmp_path_obj = Path(tmp_path)
-
-        # obtain a synchronous supabase client (same pattern used in other tasks)
         supabase = get_supabase_client()
 
-        # process_resume_file will upload the file to storage and insert a row in `resume` table
         inserted = process_resume_file(supabase=supabase, file_path=tmp_path_obj, user_id=user_id, jd_id=jd_id)
-
         resume_id = inserted.get("resume_id") if isinstance(inserted, dict) else None
         logger.info(f"process_single_uploaded_resume_task: parsed and inserted resume_id={resume_id}")
 
-        # After successful insert, enqueue ranking (use existing rank_resumes_task to process unranked resumes)
         try:
             logger.info(f"process_single_uploaded_resume_task: enqueueing rank_resumes_task for jd_id={jd_id}")
             rank_resumes_task.delay(jd_id=jd_id, user_id=user_id)
         except Exception as e:
             logger.exception("Failed to enqueue rank_resumes_task: %s", e)
-            # Not fatal: we still return success for parsing, but surface a warning
             return {"status": "parsed", "resume_id": resume_id, "warning": f"failed to enqueue ranking: {e}"}
 
         return {"status": "processed", "resume_id": resume_id}
@@ -189,9 +183,31 @@ def process_single_uploaded_resume_task(jd_id: str, file_contents: bytes, user_i
         logger.exception("Error in process_single_uploaded_resume_task: %s", e)
         return {"status": "failed", "error": str(e)}
     finally:
-        # cleanup temp file
         try:
             if tmp_path and Path(tmp_path).exists():
                 Path(tmp_path).unlink()
         except Exception as e:
-            logger.debug("Could not remove temp file %s: %s", tmp_path, e)
+            logging.getLogger(__name__).debug("Could not remove temp file %s: %s", tmp_path, e)
+
+
+# =============================
+# NEW TASK: google_linkedin_task (non-interactive, one-iteration)
+# =============================
+
+@celery_app.task
+def google_linkedin_task(jd_id: str, user_id: str, custom_prompt: str = ""):
+    """
+    Kick off one non-interactive iteration of Google+LinkedIn sourcing.
+    Uses app.services.google_linkedin_sourcer.run_sourcing (alias of run_once).
+    """
+    logger = logging.getLogger(__name__)
+    logger.info(f"google_linkedin_task: start jd_id={jd_id} user_id={user_id}")
+    try:
+        result = run_google_linkedin_sourcing(jd_id=jd_id, user_id=user_id, custom_prompt=custom_prompt or "")
+        # Ensure a normalized response
+        if isinstance(result, dict):
+            return {"status": result.get("status", "completed"), **result}
+        return {"status": "completed", "result": result}
+    except Exception as e:
+        logger.exception("google_linkedin_task failed: %s", e)
+        return {"status": "failed", "error": str(e)}

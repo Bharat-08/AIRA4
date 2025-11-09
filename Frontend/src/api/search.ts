@@ -1,7 +1,4 @@
-// frontend/src/api/search.ts
 import type { Candidate } from '../types/candidate';
-
-// const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI server URL
 
 // --- TYPES for the asynchronous API responses ---
 interface TaskStartResponse {
@@ -12,6 +9,21 @@ interface TaskStartResponse {
 interface TaskStatusResponse {
   status: 'processing' | 'completed' | 'failed';
   data?: Candidate[];
+  error?: string;
+}
+
+/** Result shape for the Google+LinkedIn sourcing task */
+export interface GoogleLinkedinTaskResult {
+  status: 'processing' | 'completed' | 'failed';
+  attempted?: number;
+  inserted_count?: number;
+  queries?: string[];
+  sample?: Array<{
+    name?: string | null;
+    profile_link?: string | null;
+    position?: string | null;
+    company?: string | null;
+  }>;
   error?: string;
 }
 
@@ -48,8 +60,8 @@ export const startSearchAndRankTask = async (jdId: string, prompt: string): Prom
  * @param jdId The ID of the job description.
  * @param prompt Optional prompt string (may be empty).
  * @param searchOption Numeric option:
- *   1 -> Fast search (Apollo-only)
- *   2 -> Web search + Apollo
+ * 1 -> Fast search (Apollo-only)
+ * 2 -> Web search + Apollo
  *
  * @returns TaskStartResponse with task_id
  */
@@ -149,8 +161,8 @@ export const getRankResumesResults = async (taskId: string): Promise<TaskStatusR
 
 /**
  * Triggers the combined search endpoint which will:
- *  - start the apollo/web search task
- *  - optionally upload a single resume and start processing it
+ * - start the apollo/web search task
+ * - optionally upload a single resume and start processing it
  * Returns the task ids (apollo_task_id, resume_task_id) for backend tasks.
  *
  * @param jdId string
@@ -220,6 +232,51 @@ export const getCombinedSearchResults = async (jdId: string, since: string): Pro
 };
 
 
+// --- NEW: Google + LinkedIn Sourcing ---
+
+/**
+ * Starts the Google+LinkedIn sourcing task on the backend.
+ * Endpoint: POST /api/search/google-linkedin/{jd_id}
+ * Body: form-data with "prompt" (optional)
+ */
+export const startGoogleLinkedinTask = async (jdId: string, prompt: string): Promise<TaskStartResponse> => {
+  const form = new FormData();
+  // backend endpoint defines `prompt` as a Form parameter (optional)
+  form.append('prompt', prompt || '');
+
+  const response = await fetch(`/api/search/google-linkedin/${encodeURIComponent(jdId)}`, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Failed to start Google+LinkedIn task' }));
+    throw new Error(errorData.detail || 'Failed to start Google+LinkedIn task');
+  }
+
+  return response.json();
+};
+
+/**
+ * Polls the backend for the result of the Google+LinkedIn sourcing task.
+ * Endpoint: GET /api/search/google-linkedin/results/{task_id}
+ */
+export const getGoogleLinkedinResults = async (taskId: string): Promise<GoogleLinkedinTaskResult> => {
+  const response = await fetch(`/api/search/google-linkedin/results/${encodeURIComponent(taskId)}`, {
+    method: 'GET',
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Failed to get Google+LinkedIn task result' }));
+    throw new Error(errorData.detail || 'Failed to get Google+LinkedIn task result');
+  }
+
+  return response.json();
+};
+
+
 // --- UTILITY FUNCTIONS (Cancellation and LinkedIn URL) ---
 
 /**
@@ -266,26 +323,6 @@ export const generateLinkedInUrl = async (profileId: string): Promise<{ linkedin
 
   return response.json();
 };
-
-// Add this new function (legacy / alternative signature)
-export const generateLinkedinUrl = async (profileId: string, token: string): Promise<{ linkedin_url: string }> => {
-  const response = await fetch(`/api/search/generate-linkedin-url`, {
-      method: 'POST',
-      headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ profile_id: profileId })
-  });
-
-  if(!response.ok){
-      const errorData = await response.json().catch(() => ({ detail: 'Failed to generate LinkedIn URL' }));
-      throw new Error(errorData.detail);
-  }
-
-  return response.json();
-};
-
 
 /**
  * Toggle favorite status for a candidate.
