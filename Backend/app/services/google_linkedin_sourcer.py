@@ -1,21 +1,22 @@
 # backend/app/services/google_linkedin_sourcer.py
 #!/usr/bin/env python3
 """
-google_linkedin_sourcer.py — Non-interactive port of google_linkedin.py
+google_linkedin_sourcer.py — Service-module port of the NEW standalone google_linkedin.py
 
-Behavior parity with the original CLI:
-- Fetch JD by jd_id from public.jds
-- Use Gemini to extract search facets (AI-only)
-- Build queries the same way
-- Search DuckDuckGo (duckduckgo_search.ddg, fallback to ddgs.DDGS)
-- For each result: normalize LinkedIn URL, filter to likely profiles, AI-parse (name/position/company/summary)
-- Score with jd_match_score_from_text (signal only)
-- Insert into public.linkedin (skip duplicates by profile_link)
+Exact logic replicated (speed & UX tweaks):
+- DEFAULT: one iteration (first N queries, but here iterations=1 for backend).
+- Faster config: fewer pages, capped results, early stop, fewer AI calls, lighter sleeps, tighter retries.
+- Location terms quoted; query shape: site:linkedin.com/in "ROLE" "LOCATION" (Dom1 OR Dom2 ...)
+- Heuristic pre-filter before AI; cap AI parses per query; early-stop after enough accepted profiles.
 
-Differences (on purpose for backend use):
-- NO interactive prompts; runs EXACTLY ONE query (first query only), simulating user answering "no" thereafter
-- Does NOT read SUPABASE_USER_ID from .env — user_id must be passed to run_once/run_sourcing
-- Uses the app’s shared Supabase client (app.supabase.supabase_client)
+Integration differences:
+- NO CLI, NO prompts — non-interactive.
+- Uses app.supabase.supabase_client.
+- Caller must pass user_id.
+
+Environment (read if set; otherwise defaults used below):
+  GEMINI_API_KEY (required; or settings.GEMINI_API_KEY)
+  MODEL_TO_USE (default: gemini-2.5-pro)
 """
 
 from __future__ import annotations
@@ -28,55 +29,60 @@ import random
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 
-# --- App wiring (shared Supabase client & settings) ---
+# App wiring
 from app.supabase import supabase_client
 from app.config import settings
 
-# --- DuckDuckGo search ---
+# Search
 try:
-    from duckduckgo_search import ddg  # pip install duckduckgo_search
+    from duckduckgo_search import ddg
     _ddg_available = True
 except Exception:
     _ddg_available = False
     try:
-        from ddgs import DDGS  # pip install ddgs
+        from ddgs import DDGS
         _ddgs_available = True
     except Exception:
         _ddgs_available = False
 
-# --- Gemini (AI) ---
-from google import genai  # pip install google-genai
+# Gemini
+from google import genai
 from google.genai import errors as genai_errors
 
-# -------------------- CONFIG --------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", getattr(settings, "GEMINI_API_KEY", "") or "").strip()
+# -------------------- CONFIG (mirrors CLI defaults) --------------------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", settings.GEMINI_API_KEY or "").strip()
 if not GEMINI_API_KEY:
     raise SystemExit("❌ GEMINI_API_KEY is required.")
 
 PRIMARY_MODEL = os.getenv("MODEL_TO_USE", "gemini-2.5-pro").strip()
-FALLBACK_MODELS: List[str] = [m for m in [
-    PRIMARY_MODEL,
-    "gemini-2.0-flash",
-    "gemini-1.5-pro",
-] if m]
+FALLBACK_MODELS: List[str] = [m for m in [PRIMARY_MODEL, "gemini-2.5-flash", "gemini-2.0-pro"] if m]
 
-PAGES_PER_QUERY = int(os.getenv("PAGES_PER_QUERY", 2))
-RESULTS_PER_PAGE = int(os.getenv("RESULTS_PER_PAGE", 50))
-MIN_DELAY = 0.8
-MAX_DELAY = 1.6
+# Faster defaults from the new CLI
+MAX_QUERIES = 6
+PAGES_PER_QUERY_DEFAULT = 1
+RESULTS_PER_PAGE_DEFAULT = 35
+MIN_DELAY = 0.15
+MAX_DELAY = 0.35
+EARLY_STOP_GOOD_CANDIDATES = 40
+
+MAX_AI_CALLS_PER_QUERY_DEFAULT = 25
+MIN_HEURISTIC_SCORE_FOR_AI_DEFAULT = 2  # 0–10
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
-# -------------------- Helpers (same as CLI) --------------------
+# -------------------- Helpers shared with CLI --------------------
 def _extract_first_json_block(text: str) -> str:
     if not text:
         return ""
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
     return m.group(0) if m else text.strip()
 
-def genai_generate_with_retry(contents: List[Any], temperature: float = 0.2,
-                              max_retries: int = 6, base_delay: float = 1.0) -> Optional[str]:
+def genai_generate_with_retry(contents: List[Any],
+                              temperature: float = 0.2,
+                              max_retries: int = 1,
+                              base_delay: float = 0.5) -> Optional[str]:
+    """Faster retry policy (same as new CLI)."""
     for model in FALLBACK_MODELS:
         attempt = 0
         while attempt <= max_retries:
@@ -93,20 +99,17 @@ def genai_generate_with_retry(contents: List[Any], temperature: float = 0.2,
                 retryable = (status in RETRY_STATUS) or ("temporarily" in msg.lower()) or ("unavailable" in msg.lower())
                 attempt += 1
                 if retryable and attempt <= max_retries:
-                    sleep_s = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                    time.sleep(sleep_s)
+                    time.sleep(base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.25))
                     continue
                 break
             except Exception:
                 attempt += 1
                 if attempt <= max_retries:
-                    sleep_s = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                    time.sleep(sleep_s)
+                    time.sleep(base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.25))
                     continue
                 break
     return None
 
-# --- AI: Extract JD facets (same prompt as CLI) ---
 JD_FACETS_PROMPT = """
 You are an expert recruiter. Given a job description record (JSON), extract concise search facets
 to find candidates on LinkedIn.
@@ -154,7 +157,6 @@ def ai_extract_jd_facets(jd_row: Dict[str, Any]) -> Dict[str, Any]:
         "extra_title_keywords": as_list(data.get("extra_title_keywords")),
     }
 
-# --- AI: Parse a LinkedIn result (same prompt as CLI) ---
 AI_PARSE_PROMPT = """
 You are an expert sourcer. Given a DuckDuckGo result's TITLE, SNIPPET, and URL
 for a LinkedIn page, extract clean structured fields.
@@ -192,7 +194,7 @@ def ai_parse_profile(title: str, snippet: str, url: str) -> Dict[str, Any]:
         "summary": data.get("summary"),
     }
 
-# --- Supabase helpers (shared client) ---
+# -------------------- Supabase helpers --------------------
 def sb_get_jd_row(jd_id: str) -> Optional[Dict[str, Any]]:
     try:
         res = supabase_client.table("jds").select(
@@ -221,12 +223,12 @@ def sb_insert_linkedin(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
 
-# --- URL helpers (same as CLI) ---
-def normalize_link(url):
+# -------------------- URL helpers (fixed regex quoting) --------------------
+def normalize_link(url: Optional[str]) -> Optional[str]:
     if not url:
         return None
     try:
-        # FIX: escape quotes in regex character classes
+        # Use single-quoted raw string; escape single quotes inside the class
         m = re.search(r'https?://[^\s\'"]*linkedin\.com/[^\s\'"]+', url)
         if m:
             return m.group(0).split("?")[0].rstrip("/")
@@ -236,17 +238,17 @@ def normalize_link(url):
     except Exception:
         return None
 
-def extract_linkedin_from_result_item(item):
+def extract_linkedin_from_result_item(item: Dict[str, Any]) -> Optional[str]:
     url = item.get("href") or item.get("url") or item.get("link") or ""
     if not url:
         body = item.get("body") or item.get("snippet") or ""
-        # FIX: escape quotes in regex character classes
+        # Same fixed quoting here
         m = re.search(r'https?://[^\s\'"]*linkedin\.com/[^\s\'"]+', body or "")
         if m:
             url = m.group(0)
     return normalize_link(url)
 
-def likely_profile_url(url):
+def likely_profile_url(url: Optional[str]) -> bool:
     if not url:
         return False
     low = url.lower()
@@ -255,11 +257,19 @@ def likely_profile_url(url):
         return False
     return "/in/" in low or "/pub/" in low or re.search(r"/profile/view", low) is not None
 
-# --- Query generation & scoring (same) ---
-MAX_QUERIES = 6
+# -------------------- Query & scoring (with quoted location) --------------------
+def _q(s: str) -> str:
+    if not s:
+        return ""
+    s = s.strip()
+    if s.startswith('"') and s.endswith('"'):
+        return s
+    return f'"{s}"'
 
-def build_queries_from_facets(fx: dict, max_q=MAX_QUERIES):
-    role = (fx.get("role") or "").strip()
+def build_queries_from_facets(fx: dict, max_q: int = MAX_QUERIES) -> List[str]:
+    role_raw = (fx.get("role") or "").strip()
+    role = _q(role_raw) if role_raw else ""
+
     locs = fx.get("locations", [])
     skills = fx.get("skills_must", [])
     domains = fx.get("domains", [])
@@ -267,16 +277,18 @@ def build_queries_from_facets(fx: dict, max_q=MAX_QUERIES):
 
     buckets = []
     if domains: buckets.append(" OR ".join(domains[:3]))
-    if skills:  buckets.append(" OR ".join(skills[:4]))
+    if skills:  buckets.append(" OR ".join(skills[:3]))
     if extras:  buckets.append(" OR ".join(extras[:3]))
 
     loc_list = locs[:2] if locs else [""]
     focus = [b for b in buckets if b][:2] or [""]
 
-    queries = []
+    queries: List[str] = []
     for loc in loc_list:
+        loc_q = _q(loc) if loc else ""
         for f in focus:
-            core = f' "{role}" {loc}'.strip()
+            core_parts = [role, loc_q]
+            core = " ".join([p for p in core_parts if p]).strip()
             q = f'site:linkedin.com/in {core} ({f})' if f else f'site:linkedin.com/in {core}'
             q = re.sub(r"\s+", " ", q).strip()
             if q and q not in queries:
@@ -287,10 +299,12 @@ def build_queries_from_facets(fx: dict, max_q=MAX_QUERIES):
             break
 
     if len(queries) < max_q:
-        base = f'site:linkedin.com/in "{role}"'
+        base = f'site:linkedin.com/in {role}'.strip()
         if locs:
             for loc in loc_list:
-                q = f"{base} {loc}".strip()
+                loc_q = _q(loc)
+                q = f"{base} {loc_q}".strip()
+                q = re.sub(r"\s+", " ", q)
                 if q not in queries:
                     queries.append(q)
                 if len(queries) >= max_q:
@@ -310,14 +324,26 @@ def jd_match_score_from_text(skills, domains, title, snippet):
     for d in (domains or []):
         if d and d.lower() in text:
             score += 2
+    # Title/keyword bonus (as in new CLI)
+    if any(k in text for k in ["head of inventory", "inventory head", "inventory manager", "supply chain", "warehouse"]):
+        score += 2
     return min(10, score)
 
-# -------------------- PUBLIC: run ONCE (first query only) --------------------
-def run_once(jd_id: str, user_id: str) -> Dict[str, Any]:
+# -------------------- PUBLIC: run_once (non-interactive) --------------------
+def run_once(
+    jd_id: str,
+    user_id: str,
+    *,
+    pages_per_query: int = PAGES_PER_QUERY_DEFAULT,
+    results_per_page: int = RESULTS_PER_PAGE_DEFAULT,
+    max_ai_calls_per_query: int = MAX_AI_CALLS_PER_QUERY_DEFAULT,
+    min_heuristic_score_for_ai: int = MIN_HEURISTIC_SCORE_FOR_AI_DEFAULT,
+    early_stop_good_candidates: int = EARLY_STOP_GOOD_CANDIDATES,
+    iterations: int = 1,  # keep 1 to mirror default CLI behavior
+) -> Dict[str, Any]:
     """
-    Perform ONE iteration of the original sourcing loop (first built query).
-    Inserts all parsed candidates into public.linkedin (skips duplicates).
-    Returns a compact summary dict.
+    Non-interactive run with the same fast logic as the new CLI.
+    - iterations: how many queries to run (default 1)
     """
     jd_row = sb_get_jd_row(jd_id)
     if not jd_row:
@@ -328,69 +354,104 @@ def run_once(jd_id: str, user_id: str) -> Dict[str, Any]:
     if not queries:
         return {"status": "completed", "attempted": 0, "inserted_count": 0, "queries": [], "sample": []}
 
-    # FIRST query only (simulate user answering "no" for the rest)
-    q = queries[0]
-    total_to_fetch = PAGES_PER_QUERY * RESULTS_PER_PAGE
-
-    results = []
-    if _ddg_available:
-        try:
-            results = ddg(q, region="wt-wt", safesearch="Off", time=None, max_results=total_to_fetch)
-        except Exception:
-            results = []
-    elif '_ddgs_available' in globals() and globals()['_ddgs_available']:
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(q, safesearch="Off", timelimit=None, max_results=total_to_fetch))
-        except Exception:
-            results = []
-    else:
-        return {"status": "failed", "error": "No DuckDuckGo client available"}
+    iterations_to_run = max(1, min(iterations, len(queries)))
 
     collected: Dict[str, Dict[str, Any]] = {}
-    if results:
-        for item in results:
-            title = item.get("title") or ""
-            snippet = item.get("body") or item.get("snippet") or ""
-            linkedin = extract_linkedin_from_result_item(item)
-            if not linkedin or "linkedin.com" not in linkedin:
-                continue
-            if not likely_profile_url(linkedin):
-                continue
+    ran_queries: List[str] = []
 
-            canonical = linkedin.split("?")[0]
-            if canonical in collected:
-                continue
+    try:
+        for qidx in range(iterations_to_run):
+            q = queries[qidx]
+            ran_queries.append(q)
 
-            parsed = ai_parse_profile(title, snippet, canonical)
-            if parsed.get("is_candidate", False):
-                score = jd_match_score_from_text(
-                    facets.get("skills_must", []),
-                    facets.get("domains", []),
-                    title,
-                    snippet
-                )
-                collected[canonical] = {
-                    "url": canonical,
-                    "title": title,
-                    "snippet": snippet,
-                    "score": score,
-                    "reason": "ai-parse",
-                    "source_query": q,
-                    "ai_name": parsed.get("name"),
-                    "ai_position": parsed.get("position"),
-                    "ai_company": parsed.get("company"),
-                    "ai_summary": parsed.get("summary"),
-                }
-            # small per-result delay to mimic original pacing
-            time.sleep(0.25)
+            total = max(1, pages_per_query) * max(10, results_per_page)
+            results = []
+            if _ddg_available:
+                try:
+                    results = ddg(q, region="wt-wt", safesearch="Off", time=None, max_results=total)
+                except Exception:
+                    results = []
+            elif '_ddgs_available' in globals() and globals()['_ddgs_available']:
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(q, safesearch="Off", timelimit=None, max_results=total))
+                except Exception:
+                    results = []
+            else:
+                return {"status": "failed", "error": "No DuckDuckGo client available"}
 
-    # polite delay for the (single) query
-    time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+            ai_calls = 0
+            for item in results or []:
+                if len(collected) >= early_stop_good_candidates:
+                    break
+
+                title = item.get("title") or ""
+                snippet = item.get("body") or item.get("snippet") or ""
+                linkedin = extract_linkedin_from_result_item(item)
+                if not linkedin or "linkedin.com" not in linkedin:
+                    continue
+                if not likely_profile_url(linkedin):
+                    continue
+
+                canonical = linkedin.split("?")[0]
+                if canonical in collected:
+                    continue
+
+                # Heuristic pre-filter
+                score = jd_match_score_from_text(facets.get("skills_must", []), facets.get("domains", []), title, snippet)
+                if score < min_heuristic_score_for_ai and not any(
+                    k in (title + " " + snippet).lower() for k in
+                    ["inventory", "supply", "warehouse", "fmcg", "retail", "e-commerce", "ecommerce"]
+                ):
+                    continue
+
+                if ai_calls >= max_ai_calls_per_query:
+                    # record minimal info when AI cap reached
+                    collected[canonical] = {
+                        "url": canonical,
+                        "title": title,
+                        "snippet": snippet,
+                        "score": score,
+                        "reason": "heuristic-cap",
+                        "source_query": q,
+                        "ai_name": None,
+                        "ai_position": None,
+                        "ai_company": None,
+                        "ai_summary": None,
+                    }
+                    continue
+
+                parsed = ai_parse_profile(title, snippet, canonical)
+                ai_calls += 1
+
+                if parsed.get("is_candidate", False):
+                    collected[canonical] = {
+                        "url": canonical,
+                        "title": title,
+                        "snippet": snippet,
+                        "score": score,
+                        "reason": "ai-parse",
+                        "source_query": q,
+                        "ai_name": parsed.get("name"),
+                        "ai_position": parsed.get("position"),
+                        "ai_company": parsed.get("company"),
+                        "ai_summary": parsed.get("summary"),
+                    }
+
+                time.sleep(0.05)  # lighter throttle
+
+            # polite pause between queries (even if iterations==1)
+            time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+
+            if len(collected) >= early_stop_good_candidates:
+                break
+
+    except KeyboardInterrupt:
+        pass
 
     # Insert into DB (skip duplicates)
     attempted = len(collected)
-    inserted: List[Dict[str, Any]] = []
+    inserted_rows: List[Dict[str, Any]] = []
     for c in sorted(collected.values(), key=lambda x: x["score"], reverse=True):
         url = c.get("url")
         if not url:
@@ -408,7 +469,7 @@ def run_once(jd_id: str, user_id: str) -> Dict[str, Any]:
         }
         row = sb_insert_linkedin(payload)
         if row:
-            inserted.append(row)
+            inserted_rows.append(row)
 
     sample = [
         {
@@ -416,33 +477,30 @@ def run_once(jd_id: str, user_id: str) -> Dict[str, Any]:
             "profile_link": i.get("profile_link"),
             "position": i.get("position"),
             "company": i.get("company"),
-        } for i in inserted[:10]
+        } for i in inserted_rows[:10]
     ]
 
     return {
         "status": "completed",
         "attempted": attempted,
-        "inserted_count": len(inserted),
-        "queries": [q],
+        "inserted_count": len(inserted_rows),
+        "queries": ran_queries,
         "sample": sample,
     }
 
-# Optional: local debug runner
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python -m app.services.google_linkedin_sourcer <jd_id> <user_id>")
-        raise SystemExit(1)
-    jd_id_arg, user_id_arg = sys.argv[1], sys.argv[2]
-    out = run_once(jd_id_arg, user_id_arg)
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-
-# Back-compat for Celery worker imports
+# Back-compat entry used by Celery task
 from typing import Optional as _Optional
-def run_sourcing(jd_id: str, user_id: str, custom_prompt: _Optional[str] = ""):
-    """
-    Celery entrypoint. Non-interactive single-iteration run.
-    """
-    return run_once(jd_id, user_id)
+def run_sourcing(jd_id: str, user_id: str, custom_prompt: _Optional[str] = "") -> Dict[str, Any]:
+    # Non-interactive single-iteration run with the new fast logic.
+    return run_once(
+        jd_id,
+        user_id,
+        pages_per_query=PAGES_PER_QUERY_DEFAULT,
+        results_per_page=RESULTS_PER_PAGE_DEFAULT,
+        max_ai_calls_per_query=MAX_AI_CALLS_PER_QUERY_DEFAULT,
+        min_heuristic_score_for_ai=MIN_HEURISTIC_SCORE_FOR_AI_DEFAULT,
+        early_stop_good_candidates=EARLY_STOP_GOOD_CANDIDATES,
+        iterations=1,
+    )
 
 __all__ = ["run_once", "run_sourcing"]
