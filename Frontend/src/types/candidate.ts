@@ -64,3 +64,19 @@ export interface Candidate {
   organization_name?: string | null;
   organization?: string | null;
 }
+
+/**
+ * ✅ New interface for LinkedIn-sourced candidates (no match_score)
+ * Matches the `public.linkedin` table exactly.
+ */
+export interface LinkedInCandidate {
+  linkedin_profile_id: string;
+  jd_id: string;
+  user_id: string;
+  name?: string | null;
+  profile_link?: string | null;
+  position?: string | null;
+  company?: string | null;
+  summary?: string | null;
+  created_at: string;
+}

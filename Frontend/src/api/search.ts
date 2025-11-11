@@ -1,4 +1,4 @@
-import type { Candidate } from '../types/candidate';
+import type { Candidate, LinkedInCandidate } from '../types/candidate';
 
 // --- TYPES for the asynchronous API responses ---
 interface TaskStartResponse {
@@ -354,4 +354,37 @@ export const toggleFavorite = async (
   }
 
   return response.json();
+};
+
+
+/* =========================================================
+   ✅ NEW: Fetch LinkedIn candidates saved after a timestamp
+   ========================================================= */
+
+/**
+ * Fetch LinkedIn-sourced candidates for a JD, filtered by created_at >= searchStartTime.
+ * Endpoint: GET /api/v1/roles/{jd_id}/linkedin_candidates?created_after=ISO8601
+ *
+ * @param jdId string - JD ID
+ * @param searchStartTime string - ISO 8601 timestamp (e.g., new Date().toISOString())
+ * @returns Promise<LinkedInCandidate[]>
+ */
+export const fetchLinkedInCandidates = async (
+  jdId: string,
+  searchStartTime: string
+): Promise<LinkedInCandidate[]> => {
+  const url = new URL(`/api/roles/${encodeURIComponent(jdId)}/linkedin_candidates`, window.location.origin);
+  url.searchParams.set('created_after', searchStartTime);
+
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: 'Failed to fetch LinkedIn candidates' }));
+    throw new Error(err.detail || 'Failed to fetch LinkedIn candidates');
+  }
+
+  return response.json() as Promise<LinkedInCandidate[]>;
 };

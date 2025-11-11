@@ -1,12 +1,21 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Header } from '../components/layout/Header';
 import { CandidateRow } from '../components/ui/CandidateRow';
-import { Plus, UploadCloud, Search as SearchIcon, SendHorizonal, Eye, History, RefreshCw, XCircle } from 'lucide-react';
+import {
+  Plus,
+  UploadCloud,
+  Search as SearchIcon,
+  SendHorizonal,
+  Eye,
+  History,
+  RefreshCw,
+  XCircle,
+} from 'lucide-react';
 import type { User } from '../types/user';
 import { uploadJdFile, uploadResumeFiles } from '../api/upload';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
 import CandidatePopupCard from '../components/ui/CandidatePopupCard';
-import JdPopupCard from '../components/ui/JdPopupCard'; // <-- NEW IMPORT
+import JdPopupCard from '../components/ui/JdPopupCard';
 
 import {
   startSearchAndRankTask,
@@ -18,14 +27,15 @@ import {
   startApolloSearchTask,
   triggerCombinedSearch,
   getCombinedSearchResults,
-  // NEW: Google+LinkedIn task APIs
   startGoogleLinkedinTask,
   getGoogleLinkedinResults,
+  fetchLinkedInCandidates, // NEW
 } from '../api/search';
 
-import type { Candidate } from '../types/candidate';
+import type { Candidate, LinkedInCandidate } from '../types/candidate';
+import { LinkedInCandidateRow } from '../components/ui/LinkedInCandidateRow'; // NEW
 
-// put this near the top of the file (after imports is fine)
+// stable key for react lists
 const stableKey = (c: Candidate) => {
   if ((c as any).rank_id) return `rank-${(c as any).rank_id}`;
   if ((c as any).resume_id) return `resume-${(c as any).resume_id}-${(c as any).rank || Math.random()}`;
@@ -33,11 +43,19 @@ const stableKey = (c: Candidate) => {
   return `fallback-${Math.random().toString(36).substring(2, 9)}`;
 };
 
-// Loader component (Unchanged)
 const Loader = () => (
-  <svg className="animate-spin h-5 w-5 text-teal-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+  <svg
+    className="animate-spin h-5 w-5 text-teal-600"
+    xmlns="http://www.w3.org/2000/svg"
+    fill="none"
+    viewBox="0 0 24 24"
+  >
     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-    <path className="opacity-75" fill="currentColor" d="M4 12a 8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 0 1 4 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    <path
+      className="opacity-75"
+      fill="currentColor"
+      d="M4 12a 8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 0 1 4 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+    ></path>
   </svg>
 );
 
@@ -59,7 +77,7 @@ export function SearchPage({ user }: { user: User }) {
 
   const [userJds, setUserJds] = useState<JdSummary[]>([]);
   const [currentJd, setCurrentJd] = useState<JobDescriptionDetails | null>(null);
-  const [selectedJd, setSelectedJd] = useState<JdSummary | null>(null); // <-- NEW: holds full JD to show in popup
+  const [selectedJd, setSelectedJd] = useState<JdSummary | null>(null);
   const [resumeFiles, setResumeFiles] = useState<FileList | null>(null);
   const [isJdLoading, setIsJdLoading] = useState(false);
   const [isRankingLoading, setIsRankingLoading] = useState(false);
@@ -69,75 +87,71 @@ export function SearchPage({ user }: { user: User }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
 
-  // Sourcing option can be 'db', 'web', or 'gl' (Google+LinkedIn AI sourcing)
+  // NEW: LinkedIn candidates state
+  const [linkedInCandidates, setLinkedInCandidates] = useState<LinkedInCandidate[]>([]);
+
+  // 'db' | 'web' | 'gl' (LinkedIn)
   const [sourcingOption, setSourcingOption] = useState<'web' | 'db' | 'gl'>('web');
 
-  // NEW: which web search mode (1 = Fast Apollo-only, 2 = Web + Apollo)
+  // web sub-option
   const [webSearchOption, setWebSearchOption] = useState<number>(2);
 
   const [taskId, setTaskId] = useState<string | null>(null);
   const pollingIntervalRef = useRef<number | null>(null);
 
-  // NEW: For combined polling (apollo task id and 'since' timestamp)
+  // Combined polling
   const [isCombinedSearch, setIsCombinedSearch] = useState(false);
   const combinedApolloTaskIdRef = useRef<string | null>(null);
   const combinedSinceRef = useRef<string | null>(null);
   const combinedPollingIntervalRef = useRef<number | null>(null);
 
+  // LinkedIn since timestamp
+  const linkedInSinceRef = useRef<string | null>(null);
+
   const jdInputRef = useRef<HTMLInputElement>(null);
   const resumeInputRef = useRef<HTMLInputElement>(null);
 
-  // Track whether we are hydrating from sessionStorage to avoid overwriting it
   const isRestoringRef = useRef<boolean>(true);
 
-  // stable, type-safe storage key helper — memoized so it won't change across renders
   const STORAGE_KEY = useMemo(() => {
     const maybeId = (user as unknown as { id?: string })?.id;
     return `search_candidates_v1::${maybeId ?? user.name ?? 'anon'}`;
   }, [user]);
 
-  // ---- NEW: Polling/timeouts constants and refs ----
-  const TASK_POLLING_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
-  const TASK_POLL_INTERVAL_MS = 5000; // 5s
-  const COMBINED_OVERALL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes for combined flow
+  const TASK_POLLING_TIMEOUT_MS = 15 * 60 * 1000;
+  const TASK_POLL_INTERVAL_MS = 5000;
+  const COMBINED_OVERALL_TIMEOUT_MS = 15 * 60 * 1000;
   const taskStartedAtRef = useRef<number | null>(null);
 
-  // Persist candidates + jd_id into sessionStorage whenever they change
+  // persist ranked candidates (not LinkedIn list) to session
   useEffect(() => {
-    if (isRestoringRef.current) {
-      return;
-    }
+    if (isRestoringRef.current) return;
     try {
       const payload: PersistedCandidates = {
         jd_id: currentJd?.jd_id ?? null,
         candidates,
       };
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch (e) {
-      // ignore storage failures
-      console.warn('Failed to persist candidates to sessionStorage', e);
+    } catch {
+      /* ignore */
     }
   }, [candidates, currentJd, STORAGE_KEY]);
 
-  // Combined restore + loadUserJds effect:
+  // load JDs and restore possibly persisted candidates
   useEffect(() => {
     let parsedStorage: PersistedCandidates | null = null;
-
-    // mark start of restore
     isRestoringRef.current = true;
 
-    // 1) Try restore sessionStorage (candidates + jd_id)
     try {
       const raw = sessionStorage.getItem(STORAGE_KEY);
       if (raw) {
         parsedStorage = JSON.parse(raw) as PersistedCandidates | null;
-        if (parsedStorage?.candidates && Array.isArray(parsedStorage.candidates) && parsedStorage.candidates.length > 0) {
+        if (parsedStorage?.candidates?.length) {
           setCandidates(parsedStorage.candidates);
-          console.debug && console.debug('[SearchPage] Restored candidates from sessionStorage', parsedStorage);
         }
       }
-    } catch (err) {
-      console.warn('Failed to parse persisted storage', err);
+    } catch {
+      /* ignore */
     }
 
     (async () => {
@@ -146,7 +160,7 @@ export function SearchPage({ user }: { user: User }) {
         setUserJds(jds);
 
         if (parsedStorage?.jd_id) {
-          const match = jds.find(j => j.jd_id === parsedStorage!.jd_id);
+          const match = jds.find((j) => j.jd_id === parsedStorage!.jd_id);
           if (match) {
             setCurrentJd({
               jd_id: match.jd_id,
@@ -156,7 +170,6 @@ export function SearchPage({ user }: { user: User }) {
               experience_required: match.experience_required || 'N/A',
             });
             isRestoringRef.current = false;
-            console.debug && console.debug('[SearchPage] Restored currentJd from sessionStorage:', match.jd_id);
             return;
           }
         }
@@ -164,13 +177,12 @@ export function SearchPage({ user }: { user: User }) {
         if (jds.length > 0 && !currentJd) {
           handleJdSelection(jds[0].jd_id, jds);
         }
-      } catch (error) {
+      } catch {
         setUploadStatus({ message: 'Could not load your saved roles.', type: 'error' });
       } finally {
         isRestoringRef.current = false;
       }
     })();
-
   }, [STORAGE_KEY]);
 
   const handleJdFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -192,9 +204,8 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // selecting a JD from the dropdown (user action)
   const handleJdSelection = (selectedJdId: string, jds: JdSummary[]) => {
-    const selectedJd = jds.find(jd => jd.jd_id === selectedJdId);
+    const selectedJd = jds.find((jd) => jd.jd_id === selectedJdId);
     if (selectedJd) {
       setCurrentJd({
         jd_id: selectedJd.jd_id,
@@ -205,30 +216,28 @@ export function SearchPage({ user }: { user: User }) {
       });
 
       if (isRestoringRef.current) {
-        // we've either restored candidates already or will rely on persisted payload;
-        console.debug && console.debug('[SearchPage] Skipping candidate clear during restore for JD', selectedJdId);
         setUploadStatus(null);
         setHasSearched(false);
         return;
       }
 
-      // When the user manually selects a JD, restore persisted candidates for this JD if present,
-      // otherwise clear previous results (user intent).
-      let restoredForThisJd = false;
+      // restore ranked candidates for this JD if present; clear otherwise
+      let restored = false;
       try {
         const raw = sessionStorage.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as PersistedCandidates | null;
           if (parsed && parsed.jd_id === selectedJdId && Array.isArray(parsed.candidates)) {
             setCandidates(parsed.candidates);
-            restoredForThisJd = true;
+            restored = true;
           }
         }
       } catch {
-        // ignore parse errors
+        /* ignore */
       }
-      if (!restoredForThisJd) {
+      if (!restored) {
         setCandidates([]);
+        setLinkedInCandidates([]); // clear LinkedIn list on JD change
       }
 
       setUploadStatus(null);
@@ -242,16 +251,12 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // NEW: When user clicks "View JD", open the JD popup for the selected JD
   const handleViewJd = (jdId?: string) => {
     const id = jdId ?? currentJd?.jd_id;
     if (!id) return;
-    const jd = userJds.find(j => j.jd_id === id);
-    if (jd) {
-      setSelectedJd(jd);
-    }
+    const jd = userJds.find((j) => j.jd_id === id);
+    if (jd) setSelectedJd(jd);
   };
-
   const handleCloseJdPopup = () => setSelectedJd(null);
 
   const handleSearchAndRank = async () => {
@@ -260,66 +265,50 @@ export function SearchPage({ user }: { user: User }) {
       return;
     }
 
-    // Clear old persisted results BEFORE starting a new search
+    // Clear old persisted ranked results
     try {
       sessionStorage.removeItem(STORAGE_KEY);
     } catch {
-      // ignore
+      /* ignore */
     }
 
-    // The chat input is disabled in UI for db
     setIsRankingLoading(true);
     setUploadStatus(null);
     setHasSearched(true);
+    setLinkedInCandidates([]);
 
-    // Record search start time for polling (UTC ISO)
     const search_start_time = new Date().toISOString();
 
     try {
-      // --- NEW BRANCH: Google+LinkedIn sourcing option (no resume upload) ---
+      // LinkedIn sourcing branch: start task and remember timestamp
       if (sourcingOption === 'gl') {
-        // This task will insert rows into public.linkedin for this JD & user
+        linkedInSinceRef.current = search_start_time;
         const res = await startGoogleLinkedinTask(currentJd.jd_id, chatMessage || '');
-        const newTaskId =
-          (res as any)?.task_id ??
-          (res as any)?.taskId ??
-          (res as any)?.id ??
-          null;
+        const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
         if (!newTaskId) throw new Error('Failed to start Google+LinkedIn sourcing task.');
         setTaskId(newTaskId);
         taskStartedAtRef.current = Date.now();
-        setUploadStatus({ message: 'Google+LinkedIn sourcing started. We’ll let you know when it’s done.', type: 'success' });
-        // Note: This path does not display candidates directly since it populates public.linkedin.
-        // You can add a follow-up flow to rank/use these entries as needed.
-        setIsRankingLoading(true);
+        setUploadStatus({ message: 'Google+LinkedIn sourcing started. We’ll fetch new profiles when ready.', type: 'success' });
         return;
       }
 
-      // If user has selected multiple resume files — preserve the old "Upload & rank" flow
+      // Existing flows (db / web)
       if (resumeFiles && resumeFiles.length > 1) {
         await uploadResumeFiles(resumeFiles, currentJd.jd_id);
         setResumeFiles(null);
-        if (resumeInputRef.current) resumeInputRef.current.value = "";
+        if (resumeInputRef.current) resumeInputRef.current.value = '';
         setUploadStatus({ message: 'Resumes uploaded. Starting ranking...', type: 'success' });
 
         if (sourcingOption === 'db') {
           const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
-          const newTaskId =
-            (res as any)?.task_id ??
-            (res as any)?.taskId ??
-            (res as any)?.id ??
-            null;
+          const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
           if (!newTaskId) throw new Error('Failed to start ranking task.');
           setTaskId(newTaskId);
           taskStartedAtRef.current = Date.now();
           setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
         } else {
           const res = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
-          const newTaskId =
-            (res as any)?.task_id ??
-            (res as any)?.taskId ??
-            (res as any)?.id ??
-            null;
+          const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
           if (!newTaskId) throw new Error('Failed to start search task.');
           combinedApolloTaskIdRef.current = newTaskId;
           combinedSinceRef.current = search_start_time;
@@ -331,16 +320,11 @@ export function SearchPage({ user }: { user: User }) {
         return;
       }
 
-      // If exactly one resume file is provided and user picked WEB sourcing,
-      // call the combined endpoint that accepts a single file plus search options.
       if (sourcingOption === 'web' && resumeFiles && resumeFiles.length === 1) {
         const file = resumeFiles[0];
         const res = await triggerCombinedSearch(currentJd.jd_id, chatMessage || '', webSearchOption, file);
         const apolloTaskId =
-          (res as any)?.apollo_task_id ??
-          (res as any)?.apolloTaskId ??
-          (res as any)?.task_id ??
-          null;
+          (res as any)?.apollo_task_id ?? (res as any)?.apolloTaskId ?? (res as any)?.task_id ?? null;
 
         if (!apolloTaskId) {
           const fallback = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
@@ -353,8 +337,11 @@ export function SearchPage({ user }: { user: User }) {
         taskStartedAtRef.current = Date.now();
         setIsCombinedSearch(true);
         setResumeFiles(null);
-        if (resumeInputRef.current) resumeInputRef.current.value = "";
-        setUploadStatus({ message: 'Combined search started. Polling for incremental & final results...', type: 'success' });
+        if (resumeInputRef.current) resumeInputRef.current.value = '';
+        setUploadStatus({
+          message: 'Combined search started. Polling for incremental & final results...',
+          type: 'success',
+        });
         return;
       }
 
@@ -362,28 +349,20 @@ export function SearchPage({ user }: { user: User }) {
       if (resumeFiles && resumeFiles.length > 0) {
         await uploadResumeFiles(resumeFiles, currentJd.jd_id);
         setResumeFiles(null);
-        if (resumeInputRef.current) resumeInputRef.current.value = "";
+        if (resumeInputRef.current) resumeInputRef.current.value = '';
         setUploadStatus({ message: 'Resumes uploaded. Starting ranking...', type: 'success' });
       }
 
       if (sourcingOption === 'db') {
         const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
-        const newTaskId =
-          (res as any)?.task_id ??
-          (res as any)?.taskId ??
-          (res as any)?.id ??
-          null;
+        const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
         if (!newTaskId) throw new Error('Failed to start ranking task.');
         setTaskId(newTaskId);
         taskStartedAtRef.current = Date.now();
         setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
       } else {
         const res = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
-        const newTaskId =
-          (res as any)?.task_id ??
-          (res as any)?.taskId ??
-          (res as any)?.id ??
-          null;
+        const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
         if (!newTaskId) throw new Error('Failed to start search task.');
         setTaskId(newTaskId);
         taskStartedAtRef.current = Date.now();
@@ -397,19 +376,8 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // --- useEffect for polling (enhanced to support combined-search and google-linkedin) ---
+  // polling for tasks
   useEffect(() => {
-    const clearPolling = (ref: React.MutableRefObject<number | null> | null = null) => {
-      if (ref && ref.current !== null) {
-        clearInterval(ref.current);
-        ref.current = null;
-      } else if (pollingIntervalRef.current !== null) {
-        clearInterval(pollingIntervalRef.current);
-        pollingIntervalRef.current = null;
-      }
-    };
-
-    // Combined-search active?
     if (isCombinedSearch) {
       const apolloTaskId = combinedApolloTaskIdRef.current;
       const since = combinedSinceRef.current;
@@ -442,12 +410,12 @@ export function SearchPage({ user }: { user: User }) {
                 apolloDone = true;
                 setUploadStatus({ message: statusResp?.error || 'Search task failed.', type: 'error' });
               }
-            } catch (err) {
-              console.debug('Apollo task status poll error', err);
+            } catch {
+              /* ignore */
             }
           }
 
-          if (apolloDone || (Date.now() - startedAt) > overallTimeoutMs) {
+          if (apolloDone || Date.now() - startedAt > overallTimeoutMs) {
             const final = await getCombinedSearchResults(currentJd!.jd_id, since);
             if (Array.isArray(final)) {
               setCandidates(final);
@@ -466,9 +434,8 @@ export function SearchPage({ user }: { user: User }) {
             }
             taskStartedAtRef.current = null;
           }
-        } catch (err) {
-          console.warn('Error while polling combined results', err);
-          if ((Date.now() - startedAt) > overallTimeoutMs) {
+        } catch {
+          if (Date.now() - startedAt > overallTimeoutMs) {
             setIsCombinedSearch(false);
             setIsRankingLoading(false);
             setUploadStatus({ message: 'Polling timed out.', type: 'error' });
@@ -481,10 +448,8 @@ export function SearchPage({ user }: { user: User }) {
         }
       };
 
-      // run immediately then set interval
       poller();
       combinedPollingIntervalRef.current = window.setInterval(poller, pollIntervalMs);
-
       return () => {
         if (combinedPollingIntervalRef.current !== null) {
           clearInterval(combinedPollingIntervalRef.current);
@@ -493,7 +458,6 @@ export function SearchPage({ user }: { user: User }) {
       };
     }
 
-    // --- taskId-based polling with timeout ---
     if (!taskId) return;
 
     if (!taskStartedAtRef.current) {
@@ -512,7 +476,11 @@ export function SearchPage({ user }: { user: User }) {
           setTaskId(null);
           taskStartedAtRef.current = null;
           setUploadStatus({ message: 'Polling timed out after 15 minutes.', type: 'error' });
-          try { await stopTask(taskId); } catch (e) { /* ignore */ }
+          try {
+            await stopTask(taskId);
+          } catch {
+            /* ignore */
+          }
           return;
         }
 
@@ -523,12 +491,22 @@ export function SearchPage({ user }: { user: User }) {
         } else if (sourcingOption === 'web') {
           resp = await getSearchResults(taskId);
         } else if (sourcingOption === 'gl') {
-          // Poll the Google+LinkedIn task status
           resp = await getGoogleLinkedinResults(taskId);
           const statusLower = (resp?.status || '').toString().toLowerCase();
           if (statusLower === 'completed') {
             const inserted = resp?.inserted_count ?? 0;
-            setUploadStatus({ message: `Google+LinkedIn sourcing completed. Inserted ${inserted} profile(s) into LinkedIn table.`, type: 'success' });
+            try {
+              const since = linkedInSinceRef.current || new Date(0).toISOString();
+              const rows = await fetchLinkedInCandidates(currentJd!.jd_id, since);
+              setLinkedInCandidates(rows);
+              setUploadStatus({
+                message: `Sourcing completed. Added ${inserted} profile(s). Showing ${rows.length} new result(s).`,
+                type: 'success',
+              });
+            } catch {
+              setUploadStatus({ message: 'Sourcing completed, but failed to fetch new rows.', type: 'error' });
+            }
+
             setIsRankingLoading(false);
             setTaskId(null);
             taskStartedAtRef.current = null;
@@ -549,7 +527,6 @@ export function SearchPage({ user }: { user: User }) {
             }
             return;
           }
-          // if 'processing', just continue polling
           return;
         }
 
@@ -575,8 +552,6 @@ export function SearchPage({ user }: { user: User }) {
             clearInterval(pollingIntervalRef.current);
             pollingIntervalRef.current = null;
           }
-        } else {
-          // still processing
         }
       } catch (error) {
         setUploadStatus({ message: (error as Error).message || 'Error while fetching task status.', type: 'error' });
@@ -590,10 +565,8 @@ export function SearchPage({ user }: { user: User }) {
       }
     };
 
-    // run immediately then schedule
     pollOnce();
     pollingIntervalRef.current = window.setInterval(pollOnce, TASK_POLL_INTERVAL_MS);
-
     return () => {
       if (pollingIntervalRef.current !== null) {
         clearInterval(pollingIntervalRef.current);
@@ -602,15 +575,12 @@ export function SearchPage({ user }: { user: User }) {
     };
   }, [taskId, sourcingOption, isCombinedSearch, currentJd]);
 
-  // --- handleStopSearch ---
   const handleStopSearch = async () => {
     try {
       if (taskId) {
         try {
           await stopTask(taskId);
-        } catch (err) {
-          console.warn('stopTask error', err);
-        }
+        } catch {}
       }
 
       if (isCombinedSearch) {
@@ -618,9 +588,7 @@ export function SearchPage({ user }: { user: User }) {
         if (apolloTaskId) {
           try {
             await stopTask(apolloTaskId);
-          } catch (err) {
-            console.warn('stopTask (apollo) error', err);
-          }
+          } catch {}
         }
         if (combinedPollingIntervalRef.current !== null) {
           clearInterval(combinedPollingIntervalRef.current);
@@ -645,19 +613,12 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  const handleUpdateCandidate = (updatedCandidate: Candidate) => {
-    setCandidates(prev =>
-      prev.map(c => c.profile_id === updatedCandidate.profile_id ? updatedCandidate : c)
-    );
+  const handleUpdateCandidate = (updated: Candidate) => {
+    setCandidates((prev) => prev.map((c) => (c.profile_id === updated.profile_id ? updated : c)));
   };
 
-  const handleCandidateNameClick = (candidate: Candidate) => {
-    setSelectedCandidate(candidate);
-  };
-
-  const handleCloseCandidatePopup = () => {
-    setSelectedCandidate(null);
-  };
+  const handleCandidateNameClick = (candidate: Candidate) => setSelectedCandidate(candidate);
+  const handleCloseCandidatePopup = () => setSelectedCandidate(null);
 
   const getMainActionButton = () => {
     if (isRankingLoading) {
@@ -670,7 +631,6 @@ export function SearchPage({ user }: { user: User }) {
         </button>
       );
     }
-    // Button text varies by sourcing option
     let buttonText = 'Search and Rank';
     if (sourcingOption === 'db') buttonText = 'Rank';
     if (sourcingOption === 'gl') buttonText = 'Start Sourcing';
@@ -685,29 +645,30 @@ export function SearchPage({ user }: { user: User }) {
     );
   };
 
-  // dynamic helper text shown above candidate list
   const helperText = (() => {
     if (isRankingLoading) return '';
     if (sourcingOption === 'db') {
-      return candidates.length > 0 ? `Found and ranked ${candidates.length} candidates.` : "Select 'My Database' and click 'Rank' to rank candidates from your database.";
+      return candidates.length > 0
+        ? `Found and ranked ${candidates.length} candidates.`
+        : "Select 'My Database' and click 'Rank' to rank candidates from your database.";
     } else if (sourcingOption === 'gl') {
-      return "This will source LinkedIn profiles with AI and add them to the LinkedIn table for this JD. You can process or use them later.";
+      return linkedInCandidates.length > 0
+        ? `Found ${linkedInCandidates.length} LinkedIn profile(s) added just now.`
+        : 'This will source LinkedIn profiles with AI and add them to the LinkedIn table for this JD. You can process or use them later.';
     } else {
-      return candidates.length > 0 ? `Found and ranked ${candidates.length} candidates.` : "Enter a prompt and click 'Search and Rank' to find candidates. Choose Fast or Web+Apollo.";
+      return candidates.length > 0
+        ? `Found and ranked ${candidates.length} candidates.`
+        : "Enter a prompt and click 'Search and Rank' to find candidates. Choose Fast or Web+Apollo.";
     }
   })();
 
-  // ---------------------------
-  // Favorite toggle handler
-  // ---------------------------
   const handleToggleFavorite = async (
     candidateId: string,
     source: 'ranked_candidates' | 'ranked_candidates_from_resume' = 'ranked_candidates',
     newFavorite: boolean
   ) => {
-    // optimistic update
-    setCandidates(prev =>
-      prev.map(c => {
+    setCandidates((prev) =>
+      prev.map((c) => {
         if (c.profile_id === candidateId || (c as any).resume_id === candidateId) {
           return { ...c, favorite: newFavorite };
         }
@@ -717,10 +678,9 @@ export function SearchPage({ user }: { user: User }) {
 
     try {
       await toggleFavorite(candidateId, source, newFavorite);
-    } catch (err) {
-      console.warn('toggleFavorite failed', err);
-      setCandidates(prev =>
-        prev.map(c => {
+    } catch {
+      setCandidates((prev) =>
+        prev.map((c) => {
           if (c.profile_id === candidateId || (c as any).resume_id === candidateId) {
             return { ...c, favorite: !newFavorite };
           }
@@ -737,11 +697,14 @@ export function SearchPage({ user }: { user: User }) {
       <main className="flex-grow p-4 sm:p-6 md:p-8 max-w-screen-2xl mx-auto w-full overflow-y-hidden min-h-0">
         <div className="grid grid-cols-12 gap-8 h-full">
           <aside className="col-span-3 flex flex-col gap-6 overflow-y-auto pb-4">
-            {/* JD Selection Box  */}
+            {/* JD Selection */}
             <div className="p-4 bg-white rounded-lg border border-gray-200 flex-shrink-0">
               <div className="flex justify-between items-center mb-2">
                 <label className="font-semibold text-gray-700">Select Role</label>
-                <button onClick={() => jdInputRef.current?.click()} className="text-sm text-teal-600 hover:underline flex items-center gap-1">
+                <button
+                  onClick={() => jdInputRef.current?.click()}
+                  className="text-sm text-teal-600 hover:underline flex items-center gap-1"
+                >
                   <Plus size={14} /> Add New Role
                 </button>
                 <input type="file" ref={jdInputRef} onChange={handleJdFileChange} className="hidden" accept=".pdf,.docx,.txt" />
@@ -754,25 +717,33 @@ export function SearchPage({ user }: { user: User }) {
                 disabled={userJds.length === 0}
               >
                 {userJds.length > 0 ? (
-                  userJds.map(jd => (
+                  userJds.map((jd) => (
                     <option key={jd.jd_id} value={jd.jd_id}>
                       {jd.role}
                     </option>
                   ))
                 ) : (
-                  <option disabled value="">Upload a JD to begin</option>
+                  <option disabled value="">
+                    Upload a JD to begin
+                  </option>
                 )}
               </select>
 
               {currentJd && (
                 <div className="mt-4 text-sm text-gray-600 space-y-2">
-                  <p><span className="font-medium">Location:</span> {currentJd.location}</p>
-                  {/* <p><span className="font-medium">Type:</span> {currentJd.job_type}</p> */}
-                  <p><span className="font-medium">Experience:</span> {currentJd.experience_required}</p>
+                  <p>
+                    <span className="font-medium">Location:</span> {currentJd.location}
+                  </p>
+                  <p>
+                    <span className="font-medium">Experience:</span> {currentJd.experience_required}
+                  </p>
                 </div>
               )}
               <div className="mt-4 flex flex-col items-stretch gap-2 text-sm">
-                <button onClick={() => handleViewJd()} className="flex items-center justify-center gap-2 p-2 rounded-md bg-gray-100 hover:bg-gray-200 border border-gray-200 text-gray-700 font-medium">
+                <button
+                  onClick={() => handleViewJd()}
+                  className="flex items-center justify-center gap-2 p-2 rounded-md bg-gray-100 hover:bg-gray-200 border border-gray-200 text-gray-700 font-medium"
+                >
                   <Eye size={16} /> View JD
                 </button>
                 <button className="flex items-center justify-center gap-2 p-2 rounded-md bg-gray-100 hover:bg-gray-200 border border-gray-200 text-gray-700 font-medium">
@@ -781,7 +752,7 @@ export function SearchPage({ user }: { user: User }) {
               </div>
             </div>
 
-            {/* --- START: SOURCING OPTIONS --- */}
+            {/* Sourcing Options */}
             <div className="p-4 bg-white rounded-lg border border-gray-200 flex-shrink-0">
               <h3 className="font-semibold text-gray-700 mb-3">Sourcing Options</h3>
               <div className="space-y-2 text-sm">
@@ -792,7 +763,8 @@ export function SearchPage({ user }: { user: User }) {
                     value="db"
                     checked={sourcingOption === 'db'}
                     onChange={() => setSourcingOption('db')}
-                  /> My Database
+                  />{' '}
+                  My Database
                 </label>
                 <label className="flex items-center gap-2">
                   <input
@@ -801,9 +773,9 @@ export function SearchPage({ user }: { user: User }) {
                     value="web"
                     checked={sourcingOption === 'web'}
                     onChange={() => setSourcingOption('web')}
-                  /> Web Search
+                  />{' '}
+                  Web Search
                 </label>
-                {/* NEW OPTION:LinkedIn (AI) */}
                 <label className="flex items-center gap-2">
                   <input
                     type="radio"
@@ -811,7 +783,8 @@ export function SearchPage({ user }: { user: User }) {
                     value="gl"
                     checked={sourcingOption === 'gl'}
                     onChange={() => setSourcingOption('gl')}
-                  /> LinkedIn
+                  />{' '}
+                  LinkedIn
                 </label>
                 <label className="flex items-center gap-2 text-gray-400">
                   <input type="radio" name="sourcing" value="both" disabled /> Both (Coming Soon)
@@ -848,25 +821,44 @@ export function SearchPage({ user }: { user: User }) {
                 </div>
               )}
 
-              <button onClick={() => resumeInputRef.current?.click()} className="mt-4 w-full border-dashed border-2 border-gray-300 rounded-lg p-6 text-center hover:border-teal-500 hover:text-teal-500 transition-colors">
-                <UploadCloud size={24} className="mx-auto text-gray-400" />
-                <p className="text-sm text-gray-500 mt-2">
-                  {resumeFiles ? `${resumeFiles.length} resumes selected` : 'Upload Resumes'}
-                </p>
-              </button>
-              <input type="file" ref={resumeInputRef} onChange={handleResumeFilesChange} className="hidden" accept=".pdf,.docx,.txt" multiple />
+              {/* Resume upload — HIDDEN in LinkedIn mode */}
+              {sourcingOption !== 'gl' && (
+                <>
+                  <button
+                    onClick={() => resumeInputRef.current?.click()}
+                    className="mt-4 w-full border-dashed border-2 border-gray-300 rounded-lg p-6 text-center hover:border-teal-500 hover:text-teal-500 transition-colors"
+                  >
+                    <UploadCloud size={24} className="mx-auto text-gray-400" />
+                    <p className="text-sm text-gray-500 mt-2">
+                      {resumeFiles ? `${resumeFiles.length} resumes selected` : 'Upload Resumes'}
+                    </p>
+                  </button>
+                  <input
+                    type="file"
+                    ref={resumeInputRef}
+                    onChange={handleResumeFilesChange}
+                    className="hidden"
+                    accept=".pdf,.docx,.txt"
+                    multiple
+                  />
+                </>
+              )}
             </div>
 
             {getMainActionButton()}
 
             {uploadStatus && (
-              <div className={`mt-4 p-3 rounded-md text-sm text-center flex-shrink-0 ${uploadStatus.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+              <div
+                className={`mt-4 p-3 rounded-md text-sm text-center flex-shrink-0 ${
+                  uploadStatus.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                }`}
+              >
                 {uploadStatus.message}
               </div>
             )}
           </aside>
 
-          {/* Main Content Area */}
+          {/* Main Content */}
           <div className="col-span-9 flex flex-col gap-8 h-full min-h-0">
             <div className="p-6 bg-white rounded-lg border border-gray-200 flex flex-col flex-grow min-h-0">
               <div className="flex-shrink-0">
@@ -879,30 +871,44 @@ export function SearchPage({ user }: { user: User }) {
                     </div>
                   )}
                 </div>
-                <p className="text-sm text-gray-500 mb-4 h-5">
-                  {!isRankingLoading && helperText}
-                </p>
-                <div className="grid grid-cols-12 text-xs font-semibold text-gray-500 uppercase py-2 border-b-2">
-                  <div className="col-span-6">Candidate</div>
-                  <div className="col-span-2">Match Score</div>
-                  <div className="col-span-2">Profile Link</div>
-                  <div className="col-span-2">Actions</div>
+                <p className="text-sm text-gray-500 mb-4 h-5">{!isRankingLoading && helperText}</p>
+
+                {/* Header row */}
+                {sourcingOption === 'gl' ? (
+                  <div className="grid grid-cols-3 text-xs font-semibold text-gray-500 uppercase py-2 border-b-2">
+                    <div className="flex items-center justify-start">Candidate</div>
+                    <div className="flex items-center justify-center">Profile Link</div>
+                    <div className="flex items-center justify-start">Actions</div>
                 </div>
+                ) : (
+                  <div className="grid grid-cols-12 text-xs font-semibold text-gray-500 uppercase py-2 border-b-2">
+                    <div className="col-span-6">Candidate</div>
+                    <div className="col-span-2">Match Score</div>
+                    <div className="col-span-2">Profile Link</div>
+                    <div className="col-span-2">Actions</div>
+                  </div>
+                )}
               </div>
 
               <div className="flex-grow overflow-y-auto max-h-[30vh]">
-                {candidates.map((candidate) => (
-                  <CandidateRow
-                    key={stableKey(candidate)}
-                    candidate={candidate}
-                    onUpdateCandidate={handleUpdateCandidate}
-                    onNameClick={handleCandidateNameClick}
-                    onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
-                      handleToggleFavorite(candidateId, (source as any) ?? 'ranked_candidates', fav ?? !candidate.favorite)
-                    }
-                    source={(candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'}
-                  />
-                ))}
+                {sourcingOption === 'gl'
+                  ? linkedInCandidates.map((li) => <LinkedInCandidateRow key={li.linkedin_profile_id} candidate={li} />)
+                  : candidates.map((candidate) => (
+                      <CandidateRow
+                        key={stableKey(candidate)}
+                        candidate={candidate}
+                        onUpdateCandidate={handleUpdateCandidate}
+                        onNameClick={handleCandidateNameClick}
+                        onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
+                          handleToggleFavorite(
+                            candidateId,
+                            (source as any) ?? 'ranked_candidates',
+                            fav ?? !candidate.favorite
+                          )
+                        }
+                        source={(candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'}
+                      />
+                    ))}
               </div>
             </div>
 
@@ -912,13 +918,16 @@ export function SearchPage({ user }: { user: User }) {
                   <div className="self-end">
                     <div className="p-3 text-sm rounded-lg bg-green-100 text-green-800">
                       {sourcingOption === 'gl'
-                        ? 'Okay, sourcing LinkedIn profiles for this JD...'
+                        ? linkedInCandidates.length > 0
+                          ? `Okay — fetched ${linkedInCandidates.length} new LinkedIn profile(s).`
+                          : 'Okay, sourcing LinkedIn profiles for this JD...'
                         : 'Okay, filtering for candidates... Here are the top results.'}
                     </div>
                   </div>
                 )}
               </div>
 
+              {/* Chat disabled in LinkedIn mode */}
               <div className="relative">
                 <input
                   type="text"
@@ -927,23 +936,28 @@ export function SearchPage({ user }: { user: User }) {
                   placeholder={
                     sourcingOption === 'db'
                       ? 'Disabled for My Database'
-                      : (sourcingOption === 'gl'
-                          ? 'Optional notes for sourcing (kept simple)'
-                          : 'Chat with AIRA... (optional)')
+                      : sourcingOption === 'gl'
+                      ? 'Chat disabled for LinkedIn sourcing'
+                      : 'Chat with AIRA... (optional)'
                   }
-                  className="w-full pl-4 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-                  onKeyDown={(e) => e.key === 'Enter' && !isRankingLoading && sourcingOption !== 'db' && handleSearchAndRank()}
-                  disabled={isRankingLoading || sourcingOption === 'db'}
+                  className={`w-full pl-4 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 ${
+                    sourcingOption === 'gl' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''
+                  }`}
+                  onKeyDown={(e) =>
+                    e.key === 'Enter' && !isRankingLoading && sourcingOption !== 'db' && sourcingOption !== 'gl' && handleSearchAndRank()
+                  }
+                  disabled={isRankingLoading || sourcingOption === 'db' || sourcingOption === 'gl'}
                 />
                 <button
                   onClick={isRankingLoading ? handleStopSearch : handleSearchAndRank}
-                  className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-teal-600"
-                  disabled={isRankingLoading || sourcingOption === 'db'}
-                  aria-disabled={isRankingLoading || sourcingOption === 'db'}
+                  className={`absolute inset-y-0 right-0 flex items-center pr-3 ${
+                    sourcingOption === 'gl' ? 'text-gray-300 cursor-not-allowed' : 'text-gray-500 hover:text-teal-600'
+                  }`}
+                  disabled={isRankingLoading || sourcingOption === 'db' || sourcingOption === 'gl'}
+                  aria-disabled={isRankingLoading || sourcingOption === 'db' || sourcingOption === 'gl'}
                 >
                   {isRankingLoading ? <XCircle size={20} className="text-red-500" /> : <SendHorizonal size={20} />}
                 </button>
-
               </div>
 
               {hasSearched && !isRankingLoading && sourcingOption !== 'gl' && (
@@ -961,20 +975,9 @@ export function SearchPage({ user }: { user: User }) {
         </div>
       </main>
 
-      {selectedCandidate && (
-        <CandidatePopupCard
-          candidate={selectedCandidate}
-          onClose={handleCloseCandidatePopup}
-        />
-      )}
+      {selectedCandidate && <CandidatePopupCard candidate={selectedCandidate} onClose={handleCloseCandidatePopup} />}
 
-      {/* JD Popup — shown when a JD is selected for viewing */}
-      {selectedJd && (
-        <JdPopupCard
-          jd={selectedJd}
-          onClose={handleCloseJdPopup}
-        />
-      )}
+      {selectedJd && <JdPopupCard jd={selectedJd} onClose={handleCloseJdPopup} />}
     </div>
   );
 }

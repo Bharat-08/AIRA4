@@ -3,12 +3,19 @@ from typing import List, Optional
 import tempfile
 from pathlib import Path
 from pydantic import BaseModel
-import datetime
+import os
+from datetime import datetime, timedelta
 from app.services.jd_parsing_service import process_jd_file, parse_jd_text
 from app.dependencies import get_current_user, get_supabase_client
 from app.models.user import User
 from app.schemas.jd import JdSummary, JdUpdateContent
 from app.services.jd_parsing_service import process_jd_file
+from app.models.linkedin import LinkedIn
+from app.schemas.linkedin import LinkedInCandidate
+from app.dependencies import get_db, get_current_user
+from sqlalchemy.orm import Session
+from fastapi import Query
+from datetime import datetime
 
 router = APIRouter(
     tags=["Roles & JDs"],
@@ -238,3 +245,52 @@ def delete_jd(
     except Exception as e:
         print(f"Error deleting role {jd_id}: {e}")
         raise HTTPException(status_code=500, detail="An internal server error occurred during role deletion.")
+    
+    
+@router.get("/{jd_id}/linkedin_candidates", response_model=list[LinkedInCandidate])
+def get_linkedin_candidates(
+    jd_id: str,
+    created_after: str = Query(..., description="ISO timestamp. Only return rows created after this time."),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Fetch LinkedIn-sourced candidates for a given JD created after a certain timestamp.
+
+    Full route:
+        GET /api/v1/roles/{jd_id}/linkedin_candidates?created_after=<ISO_TIMESTAMP>
+
+    Behavior:
+    - Only returns rows inserted after `created_after`
+    - Includes a small tolerance window (default = 10 minutes)
+    - Filters by current user + JD
+    """
+    try:
+        # Parse ISO 8601 timestamp safely
+        try:
+            created_after_dt = datetime.fromisoformat(created_after.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid ISO datetime format for created_after")
+
+        # Configurable tolerance (default = 10 minutes)
+        TOLERANCE_MINUTES = int(os.getenv("LINKEDIN_FETCH_TOLERANCE_MINUTES", "10"))
+        cutoff_time = created_after_dt - timedelta(minutes=TOLERANCE_MINUTES)
+
+        # Query the LinkedIn table
+        results = (
+            db.query(LinkedIn)
+            .filter(LinkedIn.jd_id == jd_id)
+            .filter(LinkedIn.user_id == current_user.id)
+            .filter(LinkedIn.created_at >= cutoff_time)
+            .order_by(LinkedIn.created_at.desc())
+            .all()
+        )
+
+        # Return an empty list instead of raising an error if no results
+        return results or []
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] get_linkedin_candidates failed for JD {jd_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch LinkedIn candidates.")
