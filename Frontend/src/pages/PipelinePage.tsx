@@ -4,16 +4,19 @@ import { Header } from '../components/layout/Header';
 import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight } from 'lucide-react';
 import type { User } from '../types/user';
 
-// --- NEW IMPORTS ---
+// --- API & TYPE IMPORTS ---
 import { getRankedCandidatesForJd, updateCandidateStage, updateCandidateFavoriteStatus } from '../api/pipeline';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
-// candidateStages is imported and will be used for the stage filter
 import { candidateStages, type Candidate, type CandidateStage } from '../types/candidate';
+
+// --- POPUP IMPORTS ---
+import RecommendPopup from '../components/ui/RecommendPopup';
+import CallSchedulePopup from '../components/ui/CallSchedulePopup';
 
 // A type for our local state, combining backend data + local UI stage
 type PipelineDisplayCandidate = Candidate & { stage: CandidateStage };
 
-// --- NEW: Filter State Types ---
+// --- Filter State Types ---
 type StatusFilter = 'all' | 'favorite' | 'contacted';
 type StageFilter = 'all' | CandidateStage;
 
@@ -57,13 +60,17 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => 
   );
 };
 
-// --- "Role Pipeline" Row (Unchanged from your last version) ---
+// --- "Role Pipeline" Row (MODIFIED) ---
 const PipelineCandidateRow: React.FC<{
   candidate: PipelineDisplayCandidate;
   onStageChange: (id: string, newStage: CandidateStage) => void;
   onFavoriteToggle: (profileId: string) => void;
 }> = ({ candidate, onStageChange, onFavoriteToggle }) => {
   const avatarInitial = candidate.profile_name?.split(' ').map(n => n[0]).join('').toUpperCase() || '??';
+  
+  // --- STATE FOR POPUPS ---
+  const [isRecommendOpen, setIsRecommendOpen] = useState(false);
+  const [isCallOpen, setIsCallOpen] = useState(false);
 
   const getStatusText = (candidate: Candidate) => {
     return candidate.favorite ? 'Favourited' : 'In Pipeline';
@@ -73,68 +80,121 @@ const PipelineCandidateRow: React.FC<{
     return candidate.favorite ? 'text-yellow-600 font-semibold' : 'text-gray-600';
   };
 
+  // --- HANDLERS FOR POPUPS ---
+  const handleRecommendClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRecommendOpen(true);
+  };
+
+  const handleCallClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsCallOpen(true);
+  };
+  
+  const displayName = candidate.profile_name || 'Candidate';
+
   return (
-    <div className="grid grid-cols-12 items-center py-3 px-2 border-b border-slate-100 text-sm hover:bg-slate-50">
-      <div className="col-span-1 flex justify-center">
-        <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" />
-      </div>
-      <div className="col-span-4 flex items-center gap-3">
-        <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs">
-          {avatarInitial}
+    // Wrap in fragment to include popups
+    <>
+      <div className="grid grid-cols-12 items-center py-3 px-2 border-b border-slate-100 text-sm hover:bg-slate-50">
+        <div className="col-span-1 flex justify-center">
+          <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" />
         </div>
-        <div>
-          <p className="font-bold text-slate-800">{candidate.profile_name || 'N/A'}</p>
-          <p className="text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</p>
+        {/* Col-span-4 for Name */}
+        <div className="col-span-4 flex items-center gap-3">
+          <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs">
+            {avatarInitial}
+          </div>
+          <div>
+            <p className="font-bold text-slate-800">{candidate.profile_name || 'N/A'}</p>
+            <p className="text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</p>
+          </div>
+        </div>
+
+        {/* Col-span-2 for Status */}
+        <div className="col-span-2">
+          <span className={`text-xs ${getStatusTextClass(candidate)}`}>{getStatusText(candidate)}</span>
+        </div>
+
+        {/* PROFILE LINK REMOVED (was col-span-1) */}
+
+        {/* Col-span-2 for Stage */}
+        <div className="col-span-2">
+          <select
+            value={candidate.stage}
+            onChange={(e) => {
+              if (candidate.profile_id) {
+                onStageChange(candidate.profile_id, e.target.value as CandidateStage)
+              }
+            }}
+            className="w-full p-1.5 border-none rounded-md bg-slate-100 text-slate-700 text-xs focus:ring-2 focus:ring-teal-500 appearance-none text-left"
+          >
+            {candidateStages.map(stage => (<option key={stage} value={stage}>{stage}</option>))}
+          </select>
+        </div>
+
+        {/* Col-span-3 for Actions */}
+        <div className="col-span-3 flex items-center gap-4 text-slate-400">
+          {/* Favorite star */}
+          <button
+            onClick={() => {
+              if (candidate.profile_id) {
+                onFavoriteToggle(candidate.profile_id)
+              }
+            }}
+            aria-label={candidate.favorite ? 'Unfavorite candidate' : 'Favorite candidate'}
+            className="p-1"
+            title={candidate.favorite ? 'Unfavorite' : 'Favorite'}
+          >
+            <Star
+              size={18}
+              className={`transition-colors ${candidate.favorite ? 'text-yellow-500 fill-yellow-500' : 'text-gray-400 hover:text-gray-600'}`}
+            />
+          </button>
+
+          {/* Send Button (wired up) */}
+          <button 
+            onClick={handleRecommendClick}
+            title="Recommend / Send Message"
+            className="hover:text-blue-500"
+          >
+            <Send size={18} />
+          </button>
+          
+          {/* Phone Button (wired up) */}
+          <button 
+            onClick={handleCallClick}
+            title="Schedule Call"
+            className="hover:text-green-500"
+          >
+            <Phone size={18} />
+          </button>
+          
+          <button className="hover:text-red-500"><Trash2 size={18} /></button>
         </div>
       </div>
-
-      <div className="col-span-2">
-        <span className={`text-xs ${getStatusTextClass(candidate)}`}>{getStatusText(candidate)}</span>
-      </div>
-
-      <div className="col-span-1">
-        <a href={candidate.linkedin_url || '#'} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-teal-600">
-          <Link size={18} />
-        </a>
-      </div>
-
-      <div className="col-span-2">
-        <select
-          value={candidate.stage}
-          onChange={(e) => {
-            if (candidate.profile_id) {
-              onStageChange(candidate.profile_id, e.target.value as CandidateStage)
-            }
-          }}
-          className="w-full p-1.5 border-none rounded-md bg-slate-100 text-slate-700 text-xs focus:ring-2 focus:ring-teal-500 appearance-none text-left"
-        >
-          {candidateStages.map(stage => (<option key={stage} value={stage}>{stage}</option>))}
-        </select>
-      </div>
-
-      <div className="col-span-2 flex items-center gap-4 text-slate-400">
-        {/* Favorite star */}
-        <button
-          onClick={() => {
-            if (candidate.profile_id) {
-              onFavoriteToggle(candidate.profile_id)
-            }
-          }}
-          aria-label={candidate.favorite ? 'Unfavorite candidate' : 'Favorite candidate'}
-          className="p-1"
-          title={candidate.favorite ? 'Unfavorite' : 'Favorite'}
-        >
-          <Star
-            size={18}
-            className={`transition-colors ${candidate.favorite ? 'text-yellow-500 fill-yellow-500' : 'text-gray-400 hover:text-gray-600'}`}
-          />
-        </button>
-
-        <button className="hover:text-blue-500"><Send size={18} /></button>
-        <button className="hover:text-green-500"><Phone size={18} /></button>
-        <button className="hover:text-red-500"><Trash2 size={18} /></button>
-      </div>
-    </div>
+      
+      {/* Popups (rendered outside the grid) */}
+      <RecommendPopup
+        isOpen={isRecommendOpen}
+        onClose={() => setIsRecommendOpen(false)}
+        onSend={(type, selection) => {
+          console.log('Recommend:', type, selection);
+          // Add logic to handle the recommendation
+        }}
+      />
+      <CallSchedulePopup
+        isOpen={isCallOpen}
+        onClose={() => setIsCallOpen(false)}
+        candidateName={displayName}
+        onSend={(message, channel) => {
+          console.log('Send message:', channel, message);
+          // Add logic to send the message
+        }}
+      />
+    </>
   );
 };
 
@@ -413,10 +473,15 @@ export const PipelinePage = ({ user }: { user: User }) => {
                  </div>
                </div>
 
-               {/* --- UPDATED: Candidates Table --- */}
+               {/* --- UPDATED: Candidates Table Header --- */}
                <div className="candidates-table">
                  <div className="grid grid-cols-12 text-xs font-semibold text-slate-600 uppercase py-3 px-2 bg-slate-50 border-b border-slate-200">
-                   <div className="col-span-1"></div><div className="col-span-4">Name</div><div className="col-span-2">Status</div><div className="col-span-1">Profile Link</div><div className="col-span-2">Stage</div><div className="col-span-2">Actions</div>
+                   <div className="col-span-1"></div>
+                   <div className="col-span-4">Name</div>
+                   <div className="col-span-2">Status</div>
+                   {/* Profile Link Removed */}
+                   <div className="col-span-2">Stage</div>
+                   <div className="col-span-3">Actions</div> {/* Changed from 2 to 3 */}
                  </div>
                  <div className="max-h-[60vh] overflow-y-auto">
                    {isLoading ? (<p className="text-center py-8 text-slate-500">Loading candidates...</p>) : (
