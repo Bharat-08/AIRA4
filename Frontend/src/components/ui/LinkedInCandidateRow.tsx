@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   Link as LinkIcon,
   Linkedin,
@@ -8,35 +8,102 @@ import {
   Phone,
 } from "lucide-react";
 import type { LinkedInCandidate } from "../../types/candidate";
+import RecommendPopup from "./RecommendPopup"; // Import RecommendPopup
+import CallSchedulePopup from "./CallSchedulePopup"; // Import CallSchedulePopup
 
 interface Props {
   candidate: LinkedInCandidate;
+  onToggleFavorite?: (
+    candidateId: string,
+    source: 'ranked_candidates' | 'ranked_candidates_from_resume',
+    favorite: boolean
+  ) => void;
+  source?: 'ranked_candidates' | 'ranked_candidates_from_resume';
 }
 
-export function LinkedInCandidateRow({ candidate }: Props) {
-    const displayName =
-      candidate.name?.trim() ||
-      candidate.summary?.split("\n")[0]?.trim() ||
-      "—";
+export function LinkedInCandidateRow({
+  candidate,
+  onToggleFavorite,
+  source = 'ranked_candidates',
+}: Props) {
+  const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
+  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).saved); // State for Save/Bookmark
+
+  // State for popups
+  const [isRecommendOpen, setIsRecommendOpen] = useState(false);
+  const [isCallOpen, setIsCallOpen] = useState(false);
+
+  const displayName =
+    candidate.name?.trim() ||
+    candidate.summary?.split("\n")[0]?.trim() ||
+    "—";
+
+  const displayRole = candidate.position?.trim() || "—";
+  const displayCompany = candidate.company?.trim() || "—";
+  const profileUrl = candidate.profile_link || "";
+
+  // Use a similar ID fallback strategy as AllCandidatesRow
+  const profileId =
+    (candidate as any).profile_id ||
+    (candidate as any).id ||
+    candidate.profile_link || // Fallback to profile_link if no other ID
+    '';
+
+  const avatarInitial =
+    displayName
+      .split(" ")
+      .map((n) => (n ? n[0] : ""))
+      .join("")
+      .toUpperCase() || "C";
+
+  // This noop is still used for the "Save" button's API call,
+  // but the UI will toggle.
+  const noop = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleSaveClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsSaved((prev) => !prev);
+    // In a real app, you would also make an API call here.
+  };
+
+  const handleFavoriteClick = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Do not proceed if onToggleFavorite prop is not provided or if there's no ID
+    if (!profileId || !onToggleFavorite) return;
+
+    const newVal = !isFav;
+    setIsFav(newVal); // Optimistic UI update
+    try {
+      // Call the prop function passed from the parent
+      await onToggleFavorite(String(profileId), source, newVal);
+    } catch (err) {
+      setIsFav(!newVal); // Revert on failure
+      console.warn('Failed to toggle favorite', err);
+    }
+  };
   
-    const displayRole = candidate.position?.trim() || "—";
-    const displayCompany = candidate.company?.trim() || "—";
-    const profileUrl = candidate.profile_link || "";
-  
-    const avatarInitial =
-      displayName
-        .split(" ")
-        .map((n) => (n ? n[0] : ""))
-        .join("")
-        .toUpperCase() || "C";
-  
-    const noop = (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-  
-    return (
-      // EXACT 3 equal columns; align to header (left/center/right)
+  // Handlers for opening popups
+  const handleRecommendClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsRecommendOpen(true);
+  };
+
+  const handleCallClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsCallOpen(true);
+  };
+
+  return (
+    // We use a React.Fragment to return the row AND the popups
+    <>
+      {/* EXACT 3 equal columns; align to header (left/center/right) */}
       <div className="grid grid-cols-3 items-center py-3 border-b border-gray-200 text-sm">
         {/* Candidate (left) */}
         <div className="flex items-center gap-3 min-w-0">
@@ -50,7 +117,7 @@ export function LinkedInCandidateRow({ candidate }: Props) {
             </p>
           </div>
         </div>
-  
+
         {/* Profile Link (center) */}
         <div className="flex items-center justify-center gap-4">
           <a
@@ -73,22 +140,60 @@ export function LinkedInCandidateRow({ candidate }: Props) {
             <Linkedin size={18} />
           </a>
         </div>
-  
+
         {/* Actions (left-aligned inside the third column) */}
-<div className="flex items-center justify-start gap-3 text-gray-500 pl-1">
-  <button onClick={noop} title="Save (coming soon)" className="p-1 rounded hover:bg-slate-100 transition-colors">
-    <Bookmark size={18} />
-  </button>
-  <button onClick={noop} title="Favorite (coming soon)" className="p-1 rounded hover:bg-slate-100 transition-colors">
-    <Star size={18} />
-  </button>
-  <button onClick={noop} title="Recommend (coming soon)" className="p-1 rounded hover:bg-slate-100 transition-colors">
-    <Send size={18} />
-  </button>
-  <button onClick={noop} title="Schedule Call (coming soon)" className="p-1 rounded hover:bg-slate-100 transition-colors">
-    <Phone size={18} />
-  </button>
-</div>
+        <div className="flex items-center justify-start gap-3 text-gray-500 pl-1">
+          <button
+            onClick={handleSaveClick} // Use save handler
+            title={isSaved ? 'Unsave Candidate' : 'Save Candidate'} // Dynamic title
+            className="p-1 rounded hover:bg-slate-100 transition-colors"
+            aria-pressed={isSaved} // Accessibility
+          >
+            <Bookmark size={18} className={isSaved ? 'text-blue-600' : 'text-gray-500'} /> 
+          </button>
+          <button
+            onClick={handleFavoriteClick}
+            title={isFav ? 'Unfavorite' : 'Favorite'}
+            className="p-1 rounded hover:bg-slate-100 transition-colors"
+            aria-pressed={isFav}
+          >
+            <Star size={18} className={isFav ? 'text-yellow-400' : 'text-gray-500'} />
+          </button>
+          <button
+            onClick={handleRecommendClick} // Use recommend handler
+            title="Recommend"
+            className="p-1 rounded hover:bg-slate-100 transition-colors"
+          >
+            <Send size={18} />
+          </button>
+          <button
+            onClick={handleCallClick} // Use call handler
+            title="Schedule Call"
+            className="p-1 rounded hover:bg-slate-100 transition-colors"
+          >
+            <Phone size={18} />
+          </button>
+        </div>
       </div>
-    );
-  }
+
+      {/* Popups (rendered outside the grid) */}
+      <RecommendPopup
+        isOpen={isRecommendOpen}
+        onClose={() => setIsRecommendOpen(false)}
+        onSend={(type, selection) => {
+          console.log('Recommend:', type, selection);
+          // Add logic to handle the recommendation
+        }}
+      />
+      <CallSchedulePopup
+        isOpen={isCallOpen}
+        onClose={() => setIsCallOpen(false)}
+        candidateName={displayName}
+        onSend={(message, channel) => {
+          console.log('Send message:', channel, message);
+          // Add logic to send the message
+        }}
+      />
+    </>
+  );
+}

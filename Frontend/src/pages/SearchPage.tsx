@@ -787,7 +787,7 @@ export function SearchPage({ user }: { user: User }) {
                   LinkedIn
                 </label>
                 <label className="flex items-center gap-2 text-gray-400">
-                  <input type="radio" name="sourcing" value="both" disabled /> Both (Coming Soon)
+                  {/* <input type="radio" name="sourcing" value="both" disabled /> Both (Coming Soon) */}
                 </label>
               </div>
 

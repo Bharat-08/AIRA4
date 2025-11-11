@@ -1240,59 +1240,84 @@ class EnhancedDeepResearchAgent:
         return "continue_research"
 
     def save_candidates_to_supabase(self, candidates: List[dict], jd_id: str, user_id: str) -> bool:
-        """Save validated candidates to Supabase."""
+        """Save validated candidates to Supabase (fixed: no LinkedIn URL in summary, reliable profile_url selection)."""
         if not candidates:
             self._log("WARNING", "No candidates to save")
             return True
-        
+
+        def pick_profile_url(c: dict) -> Optional[str]:
+            """Prefer LinkedIn; else validated_url; else first HTTP source URL."""
+            # 1) explicit linkedin_url
+            ln = (c.get("linkedin_url") or "").strip()
+            if ln and ln.startswith(("http://", "https://")):
+                return ln
+
+            # 2) validated_url from evidence
+            vu = (c.get("validated_url") or "").strip()
+            if vu and vu.startswith(("http://", "https://")):
+                return vu
+
+            # 3) any http(s) URL in sources
+            for s in c.get("sources", []):
+                if isinstance(s, str) and s.startswith(("http://", "https://")):
+                    return s
+
+            return None
+
         self._log("INFO", f"Saving {len(candidates)} candidates")
-        
+
         rows = []
         now = datetime.utcnow().isoformat()
-        
+
         for candidate in candidates:
-            # Build summary with source type
             source_type = candidate.get("source_type", "web")
+
+            # Decide profile_url once and reuse
+            chosen_profile_url = pick_profile_url(candidate)
+
+            # Build a clean summary WITHOUT embedding LinkedIn or profile URL
             summary_parts = [
                 f"Source Type: {source_type.upper()}",
-                f"Location: {candidate['location']}"
+                f"Location: {candidate.get('location', 'N/A')}",
             ]
-            
+
             if source_type == "apollo":
                 if candidate.get("apollo_id"):
                     summary_parts.append(f"Apollo ID: {candidate['apollo_id']}")
-                if candidate.get("linkedin_url"):
-                    summary_parts.append(f"LinkedIn: {candidate['linkedin_url']}")
+                # (Removed) Do NOT include LinkedIn URL line here to avoid confusion
             else:
-                summary_parts.append(f"Source URL: {candidate.get('validated_url', 'N/A')}")
-            
+                # For web, include the source URL only if it's not the same as profile_url
+                src = candidate.get("validated_url") or None
+                if src and src != chosen_profile_url:
+                    summary_parts.append(f"Source URL: {src}")
+
             summary_parts.extend([
                 f"Discovered by: {candidate.get('discovered_by_query', 'N/A')}",
                 f"Validated at: {candidate.get('validated_at', 'N/A')}",
                 "",
-                candidate['notes'],
+                candidate.get("notes", "") or "",
                 "",
-                f"Evidence: {candidate.get('evidence_snippet', 'N/A')}"
+                f"Evidence: {candidate.get('evidence_snippet', 'N/A')}",
             ])
-            
+
             row = {
                 "profile_id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "jd_id": jd_id,
-                "profile_name": candidate["full_name"],
-                "company": candidate["current_company"],
-                "role": candidate["current_title"],
-                "profile_url": candidate.get("validated_url") or candidate.get("linkedin_url"),
+                "profile_name": candidate.get("full_name"),
+                "company": candidate.get("current_company"),
+                "role": candidate.get("current_title"),
+                # ✅ Always prefer LinkedIn; else validated URL; else first HTTP source
+                "profile_url": chosen_profile_url,
                 "email": candidate.get("email"),
                 "phone": candidate.get("phone"),
-                "summary": "\n".join(summary_parts),
+                "summary": "\n".join([p for p in summary_parts if p is not None]),
                 "created_at": now,
             }
             rows.append(row)
-        
+
         try:
             result = self.supabase.table("search").insert(rows).execute()
-            
             if result.data:
                 self._log("INFO", f"✅ Saved {len(result.data)} candidates")
                 for i, c in enumerate(candidates, 1):
@@ -1302,29 +1327,26 @@ class EnhancedDeepResearchAgent:
             else:
                 self._log("ERROR", "No data returned")
                 return False
-            
+
         except Exception as err:
             self._log("ERROR", f"Save failed: {err}")
-            
-            # Try individual saves
             self._log("INFO", "Trying individual saves...")
             saved = 0
-            
             for row in rows:
                 try:
                     individual = self.supabase.table("search").insert([row]).execute()
                     if individual.data:
                         saved += 1
                         self._log("INFO", f"✅ Saved: {row['profile_name']}")
-                except Exception as e:
+                except Exception:
                     self._log("ERROR", f"❌ Failed: {row['profile_name']}")
-            
             if saved > 0:
                 self._log("INFO", f"✅ Saved {saved}/{len(rows)} individually")
                 return True
             else:
                 self._log("ERROR", "❌ Failed to save any")
                 return False
+
 
     def build_graph(self) -> StateGraph:
         """Build the research workflow graph."""
