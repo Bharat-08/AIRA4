@@ -1,5 +1,4 @@
 // Frontend/src/api/pipeline.ts
-
 import type { Candidate } from '../types/candidate';
 import { toggleFavorite } from './search'; // reuse the existing favorite-toggle logic
 
@@ -27,6 +26,64 @@ export const getRankedCandidatesForJd = async (jd_id: string): Promise<Candidate
 
   const data = await res.json();
   return data as Candidate[];
+};
+
+/**
+ * Fetches ALL ranked candidates (both JD and resume-sourced) for the current user.
+ * Supports pagination and filters for favorite, contacted, and save_for_future.
+ *
+ * @param page - Page number (1-indexed)
+ * @param limit - Number of candidates per page
+ * @param filters - Optional filters: { favorite?: boolean, contacted?: boolean, save_for_future?: boolean }
+ * @returns { items, page, limit, total, has_more }
+ */
+export const getAllRankedCandidates = async (
+  page: number = 1,
+  limit: number = 20,
+  filters: { favorite?: boolean; contacted?: boolean; save_for_future?: boolean } = {}
+): Promise<{
+  items: Candidate[];
+  page: number;
+  limit: number;
+  total: number;
+  has_more: boolean;
+}> => {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+
+  if (filters.favorite !== undefined) {
+    params.append('favorite', String(filters.favorite));
+  }
+  if (filters.contacted !== undefined) {
+    params.append('contacted', String(filters.contacted));
+  }
+  if (filters.save_for_future !== undefined) {
+    params.append('save_for_future', String(filters.save_for_future));
+  }
+
+  const res = await fetch(`/api/pipeline/all/?${params.toString()}`, {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to fetch all candidates (${res.status})`);
+  }
+
+  const data = await res.json();
+  // Expect { items, page, limit, total, has_more }
+  return {
+    items: data.items as Candidate[],
+    page: data.page,
+    limit: data.limit,
+    total: data.total,
+    has_more: data.has_more,
+  };
 };
 
 /**

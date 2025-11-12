@@ -356,6 +356,39 @@ export const toggleFavorite = async (
   return response.json();
 };
 
+/**
+ * ✅ Toggle "Save for Future" status for a candidate.
+ * @param candidateId The profile_id or resume_id of the candidate.
+ * @param source Either "ranked_candidates" or "ranked_candidates_from_resume".
+ * @param saveForFuture The desired boolean save_for_future value.
+ */
+export const toggleSave = async (
+  candidateId: string,
+  source: 'ranked_candidates' | 'ranked_candidates_from_resume',
+  saveForFuture: boolean
+): Promise<{ candidate_id: string; save_for_future: boolean }> => {
+  const response = await fetch(`/api/favorites/toggle-save`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      candidate_id: candidateId,
+      source,
+      save_for_future: saveForFuture,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Failed to toggle save_for_future' }));
+    throw new Error(errorData.detail || 'Failed to toggle save_for_future');
+  }
+
+  return response.json();
+};
+
+
 
 /* =========================================================
    ✅ NEW: Fetch LinkedIn candidates saved after a timestamp

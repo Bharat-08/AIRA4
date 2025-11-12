@@ -29,7 +29,6 @@ class JD(Base):
     candidates_liked: Mapped[int] = mapped_column(Integer, default=0)
     candidates_contacted: Mapped[int] = mapped_column(Integer, default=0)
 
-
     # Foreign Key to the User who uploaded it
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     

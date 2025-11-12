@@ -24,6 +24,7 @@ import {
   getRankResumesResults,
   stopTask,
   toggleFavorite,
+  toggleSave, // ✅ NEW import
   startApolloSearchTask,
   triggerCombinedSearch,
   getCombinedSearchResults,
@@ -580,7 +581,7 @@ export function SearchPage({ user }: { user: User }) {
       if (taskId) {
         try {
           await stopTask(taskId);
-        } catch {}
+        } catch { }
       }
 
       if (isCombinedSearch) {
@@ -588,7 +589,7 @@ export function SearchPage({ user }: { user: User }) {
         if (apolloTaskId) {
           try {
             await stopTask(apolloTaskId);
-          } catch {}
+          } catch { }
         }
         if (combinedPollingIntervalRef.current !== null) {
           clearInterval(combinedPollingIntervalRef.current);
@@ -688,6 +689,48 @@ export function SearchPage({ user }: { user: User }) {
         })
       );
       setUploadStatus({ message: 'Failed to update favorite. Try again.', type: 'error' });
+    }
+  };
+
+  // ------------------------------
+  // ✅ NEW: Save-for-Future handler
+  // ------------------------------
+  const handleToggleSave = async (
+    candidateId: string,
+    source: 'ranked_candidates' | 'ranked_candidates_from_resume' = 'ranked_candidates',
+    newSave: boolean
+  ) => {
+    // snapshot for revert
+    const prevCandidates = candidates;
+    const prevLinked = linkedInCandidates;
+
+    // optimistic update: ranked candidates
+    setCandidates((prev) =>
+      prev.map((c) => {
+        if (c.profile_id === candidateId || (c as any).resume_id === candidateId) {
+          return { ...c, save_for_future: newSave };
+        }
+        return c;
+      })
+    );
+
+    // optimistic update: linkedIn candidates (match by linkedin_profile_id or profile_link)
+    setLinkedInCandidates((prev) =>
+      prev.map((li) => {
+        if ((li as any).linkedin_profile_id === candidateId || (li as any).profile_link === candidateId) {
+          return { ...li, save_for_future: newSave };
+        }
+        return li;
+      })
+    );
+
+    try {
+      await toggleSave(candidateId, source, newSave);
+    } catch {
+      // revert both lists
+      setCandidates(prevCandidates);
+      setLinkedInCandidates(prevLinked);
+      setUploadStatus({ message: 'Failed to update Save-for-Future. Try again.', type: 'error' });
     }
   };
 
@@ -803,7 +846,7 @@ export function SearchPage({ user }: { user: User }) {
                       checked={webSearchOption === 1}
                       onChange={() => setWebSearchOption(1)}
                     />
-                    Fast search (Apollo-only)
+                    Fast search
                   </label>
                   <label className="flex items-center gap-2">
                     <input
@@ -813,7 +856,7 @@ export function SearchPage({ user }: { user: User }) {
                       checked={webSearchOption === 2}
                       onChange={() => setWebSearchOption(2)}
                     />
-                    Web search + Apollo (comprehensive)
+                    Web search
                   </label>
                   <p className="mt-2 text-xs text-gray-500">
                     Fast = structured Apollo API searches (quicker). Web+Apollo = broader web discovery plus Apollo.
@@ -849,9 +892,8 @@ export function SearchPage({ user }: { user: User }) {
 
             {uploadStatus && (
               <div
-                className={`mt-4 p-3 rounded-md text-sm text-center flex-shrink-0 ${
-                  uploadStatus.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                }`}
+                className={`mt-4 p-3 rounded-md text-sm text-center flex-shrink-0 ${uploadStatus.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                  }`}
               >
                 {uploadStatus.message}
               </div>
@@ -879,7 +921,7 @@ export function SearchPage({ user }: { user: User }) {
                     <div className="flex items-center justify-start">Candidate</div>
                     <div className="flex items-center justify-center">Profile Link</div>
                     <div className="flex items-center justify-start">Actions</div>
-                </div>
+                  </div>
                 ) : (
                   <div className="grid grid-cols-12 text-xs font-semibold text-gray-500 uppercase py-2 border-b-2">
                     <div className="col-span-6">Candidate</div>
@@ -892,7 +934,18 @@ export function SearchPage({ user }: { user: User }) {
 
               <div className="flex-grow overflow-y-auto max-h-[30vh]">
                 {sourcingOption === 'gl'
-                  ? linkedInCandidates.map((li) => <LinkedInCandidateRow key={li.linkedin_profile_id} candidate={li} />)
+                  ? linkedInCandidates.map((li) => (
+                      <LinkedInCandidateRow
+                        key={li.linkedin_profile_id}
+                        candidate={li}
+                        onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
+                          handleToggleFavorite(candidateId, (source as any) ?? 'ranked_candidates', fav ?? false)
+                        }
+                        onToggleSave={(candidateId: string, source?: any, save?: boolean) =>
+                          handleToggleSave(candidateId, (source as any) ?? 'ranked_candidates', save ?? !li.save_for_future)
+                        }
+                      />
+                    ))
                   : candidates.map((candidate) => (
                       <CandidateRow
                         key={stableKey(candidate)}
@@ -904,6 +957,13 @@ export function SearchPage({ user }: { user: User }) {
                             candidateId,
                             (source as any) ?? 'ranked_candidates',
                             fav ?? !candidate.favorite
+                          )
+                        }
+                        onToggleSave={(candidateId: string, source?: any, save?: boolean) =>
+                          handleToggleSave(
+                            candidateId,
+                            (source as any) ?? ((candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'),
+                            save ?? !((candidate as any).save_for_future)
                           )
                         }
                         source={(candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'}
@@ -937,12 +997,11 @@ export function SearchPage({ user }: { user: User }) {
                     sourcingOption === 'db'
                       ? 'Disabled for My Database'
                       : sourcingOption === 'gl'
-                      ? 'Chat disabled for LinkedIn sourcing'
-                      : 'Chat with AIRA... (optional)'
+                        ? 'Chat disabled for LinkedIn sourcing'
+                        : 'Chat with AIRA... (optional)'
                   }
-                  className={`w-full pl-4 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 ${
-                    sourcingOption === 'gl' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''
-                  }`}
+                  className={`w-full pl-4 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 ${sourcingOption === 'gl' ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : ''
+                    }`}
                   onKeyDown={(e) =>
                     e.key === 'Enter' && !isRankingLoading && sourcingOption !== 'db' && sourcingOption !== 'gl' && handleSearchAndRank()
                   }
@@ -950,9 +1009,8 @@ export function SearchPage({ user }: { user: User }) {
                 />
                 <button
                   onClick={isRankingLoading ? handleStopSearch : handleSearchAndRank}
-                  className={`absolute inset-y-0 right-0 flex items-center pr-3 ${
-                    sourcingOption === 'gl' ? 'text-gray-300 cursor-not-allowed' : 'text-gray-500 hover:text-teal-600'
-                  }`}
+                  className={`absolute inset-y-0 right-0 flex items-center pr-3 ${sourcingOption === 'gl' ? 'text-gray-300 cursor-not-allowed' : 'text-gray-500 hover:text-teal-600'
+                    }`}
                   disabled={isRankingLoading || sourcingOption === 'db' || sourcingOption === 'gl'}
                   aria-disabled={isRankingLoading || sourcingOption === 'db' || sourcingOption === 'gl'}
                 >

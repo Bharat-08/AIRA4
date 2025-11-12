@@ -1,4 +1,4 @@
-// frontend/src/types/candidate.ts
+// Frontend/src/types/candidate.ts
 
 // Defines the possible statuses used in some UI bits.
 export type CandidateStatus = 'Favourited' | 'Contacted';
@@ -31,35 +31,58 @@ export interface PipelineCandidate {
 /**
  * Primary Candidate interface used across Search and Pipeline pages.
  * Fields returned from the backend API should map to this shape.
+ *
+ * Note:
+ * - Many fields are optional because candidates can originate from different
+ * sources (web 'search' table vs resume table).
+ * - `source` indicates which ranked table the row came from.
  */
 export interface Candidate {
-  // --- Common Ranked Fields ---
+  // Unique identifier for the ranked row (ranked_candidates.rank_id or ranked_candidates_from_resume.rank_id)
   rank_id: string;
+
+  // If web/profile sourced, profile_id will be present (maps to `search.profile_id`)
+  profile_id?: string;
+
+  // If resume-sourced, resume_id will be present
+  resume_id?: string;
+
+  // Which source table this row came from
+  source?: 'ranked_candidates' | 'ranked_candidates_from_resume';
+
+  // Matching / ranking metadata
   match_score: number | null;
   strengths: string | null;
+
+  // Flags
   favorite: boolean;
+  save_for_future: boolean;
   contacted: boolean;
+
+  // Pipeline stage (server defaults to "In Consideration")
   stage: CandidateStage;
+
+  // Optional LinkedIn URL (may be stored on ranked row)
   linkedin_url?: string | null;
 
-  // --- Common Info Fields (in both 'search' and 'resume') ---
-  role: string | null;
-  company: string | null;
-  profile_url?: string | null;
+  // Candidate display fields (prefer these for UI)
+  profile_name?: string | null; // from 'search' table or resume person_name
+  role?: string | null;
+  company?: string | null;
 
-  // --- Web Search Fields (from 'search' table) ---
-  profile_id?: string; // <-- Must be optional
-  profile_name?: string | null; // <-- For web candidates
+  // --- ADD THIS FIELD ---
+  jd_name?: string | null;
 
-  // --- Resume Fields (from 'resume' table) ---
-  resume_id?: string; // <-- Must be optional
-  person_name?: string | null; // <-- For resume candidates
-
-  // --- Fallback fields (if needed, good for safety) ---
+  // Legacy / fallback fields (kept for compatibility across app)
   name?: string | null;
   full_name?: string | null;
-  current_title?: string | null;
+  person_name?: string | null;
+
+  // Additional optional fields used elsewhere in the app
+  profile_url?: string | null;
+
   title?: string | null;
+  current_title?: string | null;
   current_company?: string | null;
   organization_name?: string | null;
   organization?: string | null;
@@ -79,4 +102,5 @@ export interface LinkedInCandidate {
   company?: string | null;
   summary?: string | null;
   created_at: string;
+  save_for_future?: boolean;
 }

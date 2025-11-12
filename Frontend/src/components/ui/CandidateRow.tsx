@@ -1,4 +1,3 @@
-// frontend/src/components/ui/CandidateRow.tsx
 import React, { useState } from "react";
 import {
   Link as LinkIcon,
@@ -23,6 +22,11 @@ interface CandidateRowProps {
     source: "ranked_candidates" | "ranked_candidates_from_resume",
     favorite: boolean
   ) => Promise<void> | void;
+  onToggleSave?: (
+    candidateId: string,
+    source: "ranked_candidates" | "ranked_candidates_from_resume",
+    save_for_future: boolean
+  ) => Promise<void> | void;
   source?: "ranked_candidates" | "ranked_candidates_from_resume";
 }
 
@@ -31,6 +35,7 @@ export function CandidateRow({
   onUpdateCandidate,
   onNameClick,
   onToggleFavorite,
+  onToggleSave,
   source = "ranked_candidates",
 }: CandidateRowProps) {
   const [isGeneratingUrl, setIsGeneratingUrl] = useState(false);
@@ -41,53 +46,50 @@ export function CandidateRow({
   const [isCallPopupOpen, setIsCallPopupOpen] = useState(false);
   const [isRecommendPopupOpen, setIsRecommendPopupOpen] = useState(false);
 
-  // optimistic UI states
+  // optimistic UI states (use save_for_future from candidate)
   const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
-  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).saved);
+  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).save_for_future);
 
   // ---- Robust display fields (covers all shapes coming from web + resume pipelines) ----
   const displayName =
-  candidate.profile_name || // from 'search' table
-  candidate.person_name || // from 'resume' table
-  candidate.name ||
-  candidate.full_name ||
-  "—";
+    candidate.profile_name || // from 'search' table
+    candidate.person_name || // from 'resume' table
+    candidate.name ||
+    candidate.full_name ||
+    "—";
 
-const displayRole =
-  candidate.role || // from 'search' OR 'resume'
-  candidate.current_title ||
-  candidate.title ||
-  "—";
+  const displayRole =
+    candidate.role || // from 'search' OR 'resume'
+    candidate.current_title ||
+    candidate.title ||
+    "—";
 
-const displayCompany =
-  candidate.company || // from 'search' OR 'resume'
-  candidate.current_company ||
-  candidate.organization_name ||
-  candidate.organization ||
-  "—";
+  const displayCompany =
+    candidate.company || // from 'search' OR 'resume'
+    candidate.current_company ||
+    candidate.organization_name ||
+    candidate.organization ||
+    "—";
 
-const profileId =
-  candidate.profile_id || // from 'search' table
-  candidate.resume_id || // from 'resume' table
-  (candidate as any).id || // Keep this as a final fallback
-  "";
+  const profileId =
+    candidate.profile_id || // from 'search' table
+    candidate.resume_id || // from 'resume' table
+    (candidate as any).id || // Keep this as a final fallback
+    "";
 
-// --- FIX IS HERE ---
-// profileUrl should NOT fall back to linkedin_url
-const profileUrl =
-  candidate.profile_url || // from 'search' OR 'resume'
-  (candidate as any).validated_url || // This isn't in the schema, so leave as 'any'
-  "";
+  // --- FIX IS HERE ---
+  // profileUrl should NOT fall back to linkedin_url
+  const profileUrl =
+    candidate.profile_url || // from 'search' OR 'resume'
+    (candidate as any).validated_url || // This isn't in the schema, so leave as 'any'
+    "";
 
-// --- FIX IS HERE ---
-// linkedinUrl should NOT fall back to profile_url
-// It should only be a *real* linkedin_url or the newly generated one.
-const linkedinUrl =
-  generatedUrl ||
-  candidate.linkedin_url ||
-  "";
+  // --- FIX IS HERE ---
+  // linkedinUrl should NOT fall back to profile_url
+  // It should only be a *real* linkedin_url or the newly generated one.
+  const linkedinUrl = generatedUrl || candidate.linkedin_url || "";
 
-const matchScorePct = Math.round(Number(candidate.match_score || 0));
+  const matchScorePct = Math.round(Number(candidate.match_score || 0));
 
   const avatarInitial =
     displayName
@@ -97,13 +99,6 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
       .toUpperCase() || "C";
 
   const handleLinkedInClick = async () => {
-    // This logic is now correct.
-    // The `renderLinkedInButton` function will only call this
-    // if `linkedinUrl` is empty (meaning no generatedUrl or candidate.linkedin_url).
-
-    // If a URL *does* exist, the `renderLinkedInButton` will render an <a> tag instead,
-    // so this onClick handler won't even be attached.
-
     if (!profileId || isGeneratingUrl) return;
 
     setIsGeneratingUrl(true);
@@ -113,13 +108,13 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
       const result = await generateLinkedInUrl(String(profileId));
       const newUrl = result.linkedin_url;
       if (!newUrl) throw new Error("API did not return a valid URL.");
-      
+
       // Open the new URL
       window.open(newUrl, "_blank", "noopener,noreferrer");
-      
+
       // Save to local state so the UI updates
       setGeneratedUrl(newUrl);
-      
+
       // Update the parent component's state
       onUpdateCandidate({ ...(candidate as any), linkedin_url: newUrl } as Candidate);
     } catch (err) {
@@ -132,8 +127,6 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
   };
 
   const renderLinkedInButton = () => {
-    // This logic is now correct because `linkedinUrl` is fixed.
-    // if we already have a URL, render as link
     if (linkedinUrl) {
       return (
         <a
@@ -148,13 +141,10 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
       );
     }
 
-    // if `linkedinUrl` is empty, show the loading spinner or button
     if (isGeneratingUrl) {
       return <Loader2 size={18} className="animate-spin text-gray-500" />;
     }
 
-    // if `linkedinUrl` is empty and not loading, show the button
-    // that triggers the API call
     return (
       <button
         onClick={handleLinkedInClick}
@@ -209,15 +199,40 @@ const matchScorePct = Math.round(Number(candidate.match_score || 0));
     }
   };
 
-  const handleSaveClick = (e: React.MouseEvent) => {
+  // ✅ NEW: Save/Bookmark handler (async, optimistic, revert on failure)
+  const handleSaveClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+
+    if (!profileId) {
+      // Toggle locally if no id
+      const newSavedLocal = !isSaved;
+      setIsSaved(newSavedLocal);
+      try {
+        onUpdateCandidate({ ...(candidate as any), save_for_future: newSavedLocal } as Candidate);
+      } catch {
+        setIsSaved(!newSavedLocal);
+      }
+      return;
+    }
+
     const newSaved = !isSaved;
-    setIsSaved(newSaved);
+    setIsSaved(newSaved); // optimistic UI
+    // Update parent locally
+    onUpdateCandidate({ ...(candidate as any), save_for_future: newSaved } as Candidate);
+
+    if (!onToggleSave) {
+      return;
+    }
+
     try {
-      onUpdateCandidate({ ...(candidate as any), saved: newSaved } as Candidate);
-    } catch {
+      await onToggleSave(String(profileId), source, newSaved);
+    } catch (err) {
+      // revert UI and parent state
       setIsSaved(!newSaved);
+      onUpdateCandidate({ ...(candidate as any), save_for_future: !newSaved } as Candidate);
+      // eslint-disable-next-line no-console
+      console.warn("Failed to toggle save_for_future", err);
     }
   };
 
