@@ -1,19 +1,20 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal # Import Literal
 from pydantic import BaseModel, UUID4
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.dependencies import get_current_user, get_supabase_client
 from app.models.user import User
-from app.models.candidate import RankedCandidate, RankedCandidateFromResume  # SQLAlchemy models
+from app.models.candidate import RankedCandidate, RankedCandidateFromResume
+from app.models.linkedin import LinkedIn  # <-- 1. IMPORT LINKEDIN MODEL
 from postgrest.exceptions import APIError
 from supabase import Client
-import math # Import math for batching
+import math
 
 logger = logging.getLogger(__name__)
 
-# --- Helper function for batching ---
+# --- Helper function for batching (Unchanged) ---
 async def fetch_in_batches(
     supabase_client: Client,
     table_name: str,
@@ -64,7 +65,8 @@ class PipelineCandidateResponse(BaseModel):
     linkedin_url: Optional[str] = None
     contacted: bool = False
     stage: Optional[str] = None
-    source: Optional[str] = "ranked_candidates"
+    # 2. UPDATE SOURCE TO BE MORE SPECIFIC
+    source: Literal["ranked_candidates", "ranked_candidates_from_resume", "linkedin"]
 
     profile_name: Optional[str] = None
     role: Optional[str] = None
@@ -95,10 +97,13 @@ async def get_pipeline_for_jd(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Fetches all ranked candidates for a specific JD, combining data from
-    the SQL DB (ranks, scores, etc.) and Supabase (profile info, jd info).
+    Fetches all ranked AND sourced candidates for a specific JD, combining data
+    from PostgreSQL (ranks, scores, linkedin) and Supabase (profile info, jd info).
     """
     try:
+        # --- 3. ADD A LIST TO HOLD ALL MERGED CANDIDATES ---
+        final_pipeline: List[PipelineCandidateResponse] = []
+        
         # 1. Fetch ranked data from PostgreSQL (SQLAlchemy)
         ranked_candidates = (
             db.query(RankedCandidate)
@@ -110,12 +115,28 @@ async def get_pipeline_for_jd(
             .all()
         )
 
-        if not ranked_candidates:
-            return []
-
         # 2. Extract profile_ids and jd_ids to query Supabase
         profile_ids = [str(rc.profile_id) for rc in ranked_candidates if rc.profile_id]
+        # Get jd_id from ranked candidates
         jd_ids = list(set([str(rc.jd_id) for rc in ranked_candidates if rc.jd_id]))
+        
+        # --- 4. FETCH SOURCED LINKEDIN CANDIDATES ---
+        linkedin_candidates = (
+            db.query(LinkedIn)
+            .filter(
+                LinkedIn.jd_id == jd_id,
+                LinkedIn.user_id == str(current_user.id)
+            )
+            .all()
+        )
+        
+        # Add jd_id from linkedin candidates
+        if not jd_ids and linkedin_candidates:
+             jd_ids = list(set([str(lc.jd_id) for lc in linkedin_candidates if lc.jd_id]))
+        # --- END OF NEW QUERY ---
+
+        if not ranked_candidates and not linkedin_candidates:
+            return [] # Return empty if no candidates from any source
 
         # 3. Fetch profile info from Supabase ("search" table) - BATCHED
         profile_map = await fetch_in_batches(
@@ -135,8 +156,7 @@ async def get_pipeline_for_jd(
             ids=jd_ids
         )
 
-        # 5. Merge the data sources
-        final_pipeline: List[PipelineCandidateResponse] = []
+        # 5. Merge the data sources for RANKED candidates
         for rc in ranked_candidates:
             profile_data = profile_map.get(str(rc.profile_id), {}) if rc.profile_id else {}
             jd_data = jd_map.get(str(rc.jd_id), {}) if rc.jd_id else {}
@@ -151,13 +171,39 @@ async def get_pipeline_for_jd(
                 linkedin_url=rc.linkedin_url,
                 contacted=bool(rc.contacted),
                 stage=rc.stage,
-                source="ranked_candidates", # Source is hardcoded as this endpoint only queries ranked_candidates
+                source="ranked_candidates", # Source is hardcoded
                 profile_name=profile_data.get("profile_name"),
                 role=profile_data.get("role"),
                 company=profile_data.get("company"),
                 jd_name=jd_data.get("role") if jd_data else None,
             )
             final_pipeline.append(candidate_data)
+            
+        # --- 6. MERGE THE DATA SOURCES FOR SOURCED LINKEDIN CANDIDATES ---
+        for lc in linkedin_candidates:
+            jd_data = jd_map.get(str(lc.jd_id), {}) if lc.jd_id else {}
+            
+            # Map LinkedIn data to the PipelineCandidateResponse
+            linkedin_candidate_data = PipelineCandidateResponse(
+                # Use linkedin_profile_id as the unique ID for the card
+                rank_id=lc.linkedin_profile_id, 
+                profile_id=lc.linkedin_profile_id, # Also set profile_id
+                resume_id=None,
+                match_score=None, # LinkedIn candidates don't have a score
+                strengths=None,
+                favorite=bool(lc.favourite), # Use 'favourite' (with u)
+                save_for_future=bool(lc.save_for_future),
+                linkedin_url=lc.profile_link,
+                contacted=False, # Default to False
+                stage="Sourced", # Assign a default stage to appear in the pipeline
+                source="linkedin", # Set the correct source
+                profile_name=lc.name, # Get data directly from the model
+                role=lc.position,
+                company=lc.company,
+                jd_name=jd_data.get("role") if jd_data else None,
+            )
+            final_pipeline.append(linkedin_candidate_data)
+        # --- END OF NEW MERGE LOGIC ---
 
         return final_pipeline
 
@@ -178,41 +224,50 @@ async def get_all_ranked_candidates(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Fetch all ranked candidates (both from `ranked_candidates` and
-    `ranked_candidates_from_resume`) for the current user, with pagination
-    and optional boolean filters. Merges data from Supabase.
+    Fetch all ranked candidates (both from `ranked_candidates`,
+    `ranked_candidates_from_resume`, AND `linkedin`) for the current user,
+    with pagination and optional boolean filters. Merges data from Supabase.
     """
     try:
-        # 1. Build filters for local DB query
-        filters = [RankedCandidate.user_id == str(current_user.id)]
+        # 1. Build filters
+        filters_ranked = [RankedCandidate.user_id == str(current_user.id)]
         filters_resume = [RankedCandidateFromResume.user_id == str(current_user.id)]
+        filters_linkedin = [LinkedIn.user_id == str(current_user.id)]
 
         if favorite is not None:
-            filters.append(RankedCandidate.favorite.is_(favorite))
+            filters_ranked.append(RankedCandidate.favorite.is_(favorite))
             filters_resume.append(RankedCandidateFromResume.favorite.is_(favorite))
+            filters_linkedin.append(LinkedIn.favourite.is_(favorite)) # Use 'favourite'
 
         if contacted is not None:
-            filters.append(RankedCandidate.contacted.is_(contacted))
+            # LinkedIn table doesn't have 'contacted', so we can't filter by it
+            # if contacted is True, we must exclude linkedin candidates
+            filters_ranked.append(RankedCandidate.contacted.is_(contacted))
             filters_resume.append(RankedCandidateFromResume.contacted.is_(contacted))
-
+        
         if save_for_future is not None:
-            filters.append(RankedCandidate.save_for_future.is_(save_for_future))
+            filters_ranked.append(RankedCandidate.save_for_future.is_(save_for_future))
             filters_resume.append(RankedCandidateFromResume.save_for_future.is_(save_for_future))
+            filters_linkedin.append(LinkedIn.save_for_future.is_(save_for_future))
 
         # 2. Query local DB
-        # TODO: This logic queries ALL rows then paginates.
-        # This is inefficient but reflects the previous logic.
-        # A future optimization would be to paginate the SQL query itself.
-        ranked_rows = db.query(RankedCandidate).filter(*filters).all()
+        ranked_rows = db.query(RankedCandidate).filter(*filters_ranked).all()
         resume_rows = db.query(RankedCandidateFromResume).filter(*filters_resume).all()
         
-        all_rows = ranked_rows + resume_rows
+        linkedin_rows = []
+        # Only include linkedin rows if we are NOT filtering for contacted=True
+        if not (contacted is True):
+             linkedin_rows = db.query(LinkedIn).filter(*filters_linkedin).all()
 
-        # 3. Sort before paginating
-        all_rows.sort(
-            key=lambda r: r.match_score if r.match_score is not None else -999999.0,
-            reverse=True
-        )
+        all_rows: List[Any] = ranked_rows + resume_rows + linkedin_rows
+
+        # 3. Sort before paginating (LinkedIn rows get default score -999999.0)
+        def get_sort_key(r):
+            if isinstance(r, LinkedIn):
+                return -999999.0
+            return r.match_score if r.match_score is not None else -999999.0
+            
+        all_rows.sort(key=get_sort_key, reverse=True)
 
         # 4. Paginate the combined list
         total = len(all_rows)
@@ -224,9 +279,11 @@ async def get_all_ranked_candidates(
         # 5. Collect IDs *from the paginated list only*
         profile_ids = [str(r.profile_id) for r in paginated_rows if isinstance(r, RankedCandidate) and r.profile_id]
         resume_ids = [str(r.resume_id) for r in paginated_rows if isinstance(r, RankedCandidateFromResume) and r.resume_id]
+        # Note: LinkedIn IDs are handled directly, no Supabase enrichment needed
+        
         jd_ids = list(set([str(r.jd_id) for r in paginated_rows if r.jd_id]))
 
-        # 6. Query Supabase 'search' table - BATCHED
+        # 6. Query Supabase 'search' table
         profile_map = await fetch_in_batches(
             supabase_client=supabase,
             table_name="search",
@@ -235,23 +292,21 @@ async def get_all_ranked_candidates(
             ids=profile_ids
         )
 
-        # 7. Query Supabase 'resumes' table - BATCHED
-        # Note: The log showed 'resumes' does not exist. Let's try 'resume' (singular)
-        # If this also fails, the helper will log the error but not crash.
+        # 7. Query Supabase 'resume' table
         resume_map = await fetch_in_batches(
             supabase_client=supabase,
-            table_name="resume", # Trying 'resume' (singular) based on log
+            table_name="resume",
             id_column="resume_id",
             select_columns="resume_id, person_name, organization",
             ids=resume_ids
         )
 
-        # 8. Query Supabase 'jds' table - BATCHED
+        # 8. Query Supabase 'jds' table
         jd_map = await fetch_in_batches(
             supabase_client=supabase,
             table_name="jds",
             id_column="jd_id",
-            select_columns="jd_id, role", # Corrected: Only 'role' exists
+            select_columns="jd_id, role",
             ids=jd_ids
         )
         
@@ -277,7 +332,7 @@ async def get_all_ranked_candidates(
                         linkedin_url=r.linkedin_url,
                         contacted=bool(r.contacted),
                         stage=r.stage,
-                        source="ranked_candidates", # Set correct source
+                        source="ranked_candidates",
                         profile_name=pdata.get("profile_name"),
                         role=pdata.get("role"),
                         company=pdata.get("company"),
@@ -298,10 +353,30 @@ async def get_all_ranked_candidates(
                         linkedin_url=r.linkedin_url,
                         contacted=bool(r.contacted),
                         stage=r.stage,
-                        source="ranked_candidates_from_resume", # Set correct source
+                        source="ranked_candidates_from_resume",
                         profile_name=rdata.get("person_name") or None,
                         role=None, 
                         company=rdata.get("organization") or None,
+                        jd_name=jd_name,
+                    )
+                )
+            elif isinstance(r, LinkedIn):
+                combined.append(
+                    PipelineCandidateResponse(
+                        rank_id=r.linkedin_profile_id, # Use main ID as rank_id
+                        profile_id=r.linkedin_profile_id,
+                        resume_id=None,
+                        match_score=None,
+                        strengths=None,
+                        favorite=bool(r.favourite),
+                        save_for_future=bool(r.save_for_future),
+                        linkedin_url=r.profile_link,
+                        contacted=False, # Default to False
+                        stage="Sourced", # Default stage
+                        source="linkedin",
+                        profile_name=r.name,
+                        role=r.position,
+                        company=r.company,
                         jd_name=jd_name,
                     )
                 )
@@ -327,7 +402,10 @@ async def update_candidate_stage(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # This function is unchanged
+    # This function is unchanged.
+    # NOTE: This will NOT work for LinkedIn candidates, as they don't
+    # exist in RankedCandidate tables and don't have a 'stage' column.
+    # It will correctly return a 404 if a linkedin ID is used.
     if payload is None or not payload.stage:
         raise HTTPException(status_code=400, detail="Missing 'stage' in request body.")
 

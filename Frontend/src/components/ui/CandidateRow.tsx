@@ -47,7 +47,9 @@ export function CandidateRow({
   const [isRecommendPopupOpen, setIsRecommendPopupOpen] = useState(false);
 
   // optimistic UI states (use save_for_future from candidate)
-  const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
+  // Check both 'favorite' and 'favourite' due to inconsistent naming across models
+  const initialFav = (candidate as any).favorite || (candidate as any).favourite || false;
+  const [isFav, setIsFav] = useState<boolean>(!!initialFav);
   const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).save_for_future);
 
   // ---- Robust display fields (covers all shapes coming from web + resume pipelines) ----
@@ -183,17 +185,31 @@ export function CandidateRow({
   const handleFavoriteClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!profileId) return;
+
+    // --- FIX: DETERMINE CORRECT ID TO SEND ---
+    let idToSend = String(profileId);
+    
+    // If using ranked/resume tables, we MUST use rank_id to update the specific row.
+    // Profile_id might be ambiguous if the candidate is applied to multiple JDs.
+    if (source === 'ranked_candidates' || source === 'ranked_candidates_from_resume') {
+      if (candidate.rank_id) {
+        idToSend = String(candidate.rank_id);
+      } else {
+        console.warn("CandidateRow: Missing rank_id for ranked candidate. Update may fail.");
+      }
+    }
+    // If source is 'linkedin', we stick to profileId (which maps to linkedin_profile_id)
 
     const newVal = !isFav;
-    setIsFav(newVal);
+    setIsFav(newVal); // Optimistic update
+    
     try {
       if (onToggleFavorite) {
-        await onToggleFavorite(String(profileId), source, newVal);
+        await onToggleFavorite(idToSend, source, newVal);
       }
       onUpdateCandidate({ ...(candidate as any), favorite: newVal } as Candidate);
     } catch (err) {
-      setIsFav(!newVal);
+      setIsFav(!newVal); // Revert on error
       // eslint-disable-next-line no-console
       console.warn("Failed to toggle favorite", err);
     }
@@ -204,8 +220,19 @@ export function CandidateRow({
     e.preventDefault();
     e.stopPropagation();
 
-    if (!profileId) {
-      // Toggle locally if no id
+    // --- FIX: DETERMINE CORRECT ID TO SEND ---
+    let idToSend = String(profileId);
+
+    if (source === 'ranked_candidates' || source === 'ranked_candidates_from_resume') {
+      if (candidate.rank_id) {
+        idToSend = String(candidate.rank_id);
+      }
+      // If rank_id is missing, we continue with profileId, though it might not work perfectly on backend
+      // But for 'unsaved' optimistic toggle below, it doesn't matter yet.
+    }
+
+    if (!idToSend && !candidate.rank_id) {
+      // Toggle locally if no id (fallback)
       const newSavedLocal = !isSaved;
       setIsSaved(newSavedLocal);
       try {
@@ -226,7 +253,7 @@ export function CandidateRow({
     }
 
     try {
-      await onToggleSave(String(profileId), source, newSaved);
+      await onToggleSave(idToSend, source, newSaved);
     } catch (err) {
       // revert UI and parent state
       setIsSaved(!newSaved);

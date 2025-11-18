@@ -18,5 +18,10 @@ class LinkedInCandidate(BaseModel):
 
     created_at: datetime
 
+    # --- ADD THESE TWO LINES ---
+    save_for_future: bool
+    favourite: bool
+    # ---------------------------
+
     class Config:
         orm_mode = True

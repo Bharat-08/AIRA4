@@ -32,6 +32,8 @@ from supabase import Client
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.candidate import RankedCandidate, RankedCandidateFromResume
+from app.models.linkedin import LinkedIn  # <-- ADDED THIS IMPORT
+from app.schemas.linkedin import LinkedInCandidate  # <-- ADDED THIS IMPORT
 
 # LinkedIn finder
 from ..services.linkedin_finder_service import LinkedInFinder
@@ -599,3 +601,4 @@ async def get_google_linkedin_results(task_id: str):
         )
 
     return payload
+

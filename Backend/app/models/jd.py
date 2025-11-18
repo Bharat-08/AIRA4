@@ -22,6 +22,10 @@ class JD(Base):
     # --- NEW COLUMN: Stores the original, complete JD content ---
     jd_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # --- FIX: Added status column ---
+    # This allows SQLAlchemy to filter by status="Open"
+    status: Mapped[str | None] = mapped_column(String, default="Open", nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     
     # --- EXISTING COLUMNS: For sorting and stats ---

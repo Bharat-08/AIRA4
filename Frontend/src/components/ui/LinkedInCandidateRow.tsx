@@ -11,29 +11,31 @@ import type { LinkedInCandidate } from "../../types/candidate";
 import RecommendPopup from "./RecommendPopup"; // Import RecommendPopup
 import CallSchedulePopup from "./CallSchedulePopup"; // Import CallSchedulePopup
 
+// Define the source type we'll be using
+type CandidateSource = 'ranked_candidates' | 'ranked_candidates_from_resume' | 'linkedin';
+
 interface Props {
   candidate: LinkedInCandidate;
   onToggleFavorite?: (
     candidateId: string,
-    source: 'ranked_candidates' | 'ranked_candidates_from_resume',
+    source: CandidateSource, // <-- UPDATED TYPE
     favorite: boolean
   ) => void;
   onToggleSave?: (
     candidateId: string,
-    source: 'ranked_candidates' | 'ranked_candidates_from_resume',
+    source: CandidateSource, // <-- UPDATED TYPE
     save_for_future: boolean
   ) => Promise<void> | void;
-  source?: 'ranked_candidates' | 'ranked_candidates_from_resume';
+  // We no longer need the 'source' prop, as this component *is* the linkedin source
 }
 
 export function LinkedInCandidateRow({
   candidate,
   onToggleFavorite,
   onToggleSave,
-  source = 'ranked_candidates',
 }: Props) {
   const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
-  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).save_for_future); // initialize from save_for_future
+  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).save_for_future);
 
   // State for popups
   const [isRecommendOpen, setIsRecommendOpen] = useState(false);
@@ -48,13 +50,8 @@ export function LinkedInCandidateRow({
   const displayCompany = candidate.company?.trim() || "—";
   const profileUrl = candidate.profile_link || "";
 
-  // Prefer linkedin_profile_id, then other fallbacks
-  const profileId =
-    (candidate as any).linkedin_profile_id ||
-    (candidate as any).profile_id ||
-    (candidate as any).id ||
-    candidate.profile_link || // Fallback to profile_link if no other ID
-    '';
+  // Use the correct ID for LinkedIn candidates
+  const profileId = candidate.linkedin_profile_id;
 
   const avatarInitial =
     displayName
@@ -74,14 +71,7 @@ export function LinkedInCandidateRow({
     e.preventDefault();
     e.stopPropagation();
 
-    // If the parent didn't pass a handler or we don't have an id, do nothing (but toggle UI locally)
-    if (!profileId) {
-      // toggle locally so user gets instant feedback even if no ID
-      setIsSaved((prev) => !prev);
-      return;
-    }
-    if (!onToggleSave) {
-      // still toggle locally
+    if (!profileId || !onToggleSave) {
       setIsSaved((prev) => !prev);
       return;
     }
@@ -90,8 +80,10 @@ export function LinkedInCandidateRow({
     setIsSaved(newVal); // optimistic
 
     try {
-      await onToggleSave(String(profileId), source, newVal);
-      // success -> nothing else to do, parent is expected to update remote state
+      // --- THIS IS THE FIX ---
+      // Hard-code the source as "linkedin"
+      await onToggleSave(String(profileId), "linkedin", newVal);
+      // -----------------------
     } catch (err) {
       // revert on failure
       setIsSaved(!newVal);
@@ -103,14 +95,19 @@ export function LinkedInCandidateRow({
   const handleFavoriteClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Do not proceed if onToggleFavorite prop is not provided or if there's no ID
-    if (!profileId || !onToggleFavorite) return;
+    
+    if (!profileId || !onToggleFavorite) {
+      setIsFav((prev) => !prev);
+      return;
+    }
 
     const newVal = !isFav;
     setIsFav(newVal); // Optimistic UI update
     try {
-      // Call the prop function passed from the parent
-      await onToggleFavorite(String(profileId), source, newVal);
+      // --- THIS IS THE FIX ---
+      // Hard-code the source as "linkedin"
+      await onToggleFavorite(String(profileId), "linkedin", newVal);
+      // -----------------------
     } catch (err) {
       setIsFav(!newVal); // Revert on failure
       // eslint-disable-next-line no-console
@@ -175,7 +172,7 @@ export function LinkedInCandidateRow({
         {/* Actions (left-aligned inside the third column) */}
         <div className="flex items-center justify-start gap-3 text-gray-500 pl-1">
           <button
-            onClick={handleSaveClick} // Use save handler (now async & optimistic)
+            onClick={handleSaveClick} // Use save handler
             title={isSaved ? 'Unsave Candidate' : 'Save Candidate'} // Dynamic title
             className="p-1 rounded hover:bg-slate-100 transition-colors"
             aria-pressed={isSaved} // Accessibility

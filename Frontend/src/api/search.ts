@@ -1,3 +1,4 @@
+// Frontend/src/api/search.ts
 import type { Candidate, LinkedInCandidate } from '../types/candidate';
 
 // --- TYPES for the asynchronous API responses ---
@@ -205,7 +206,7 @@ export const triggerCombinedSearch = async (
  * The 'since' param should be an ISO string (UTC) representing when the search started.
  *
  * @param jdId string
- * @param since ISO datetime string (e.g. new Date().toISOString())
+ *What do you know about me? * @param since ISO datetime string (e.g. new Date().toISOString())
  * @returns An array of Candidate objects (may be empty)
  */
 export const getCombinedSearchResults = async (jdId: string, since: string): Promise<Candidate[]> => {
@@ -327,12 +328,13 @@ export const generateLinkedInUrl = async (profileId: string): Promise<{ linkedin
 /**
  * Toggle favorite status for a candidate.
  * @param candidateId The profile_id or resume_id of the candidate.
- * @param source Either "ranked_candidates" or "ranked_candidates_from_resume".
+ * @param source Either "ranked_candidates", "ranked_candidates_from_resume", or "linkedin".
  * @param favorite The desired boolean favorite value.
  */
 export const toggleFavorite = async (
   candidateId: string,
-  source: 'ranked_candidates' | 'ranked_candidates_from_resume',
+  // --- THIS LINE IS UPDATED ---
+  source: 'ranked_candidates' | 'ranked_candidates_from_resume' | 'linkedin',
   favorite: boolean
 ): Promise<{ candidate_id: string; favorite: boolean }> => {
   const response = await fetch(`/api/favorites/toggle`, {
@@ -359,12 +361,13 @@ export const toggleFavorite = async (
 /**
  * ✅ Toggle "Save for Future" status for a candidate.
  * @param candidateId The profile_id or resume_id of the candidate.
- * @param source Either "ranked_candidates" or "ranked_candidates_from_resume".
+ * @param source Either "ranked_candidates", "ranked_candidates_from_resume", or "linkedin".
  * @param saveForFuture The desired boolean save_for_future value.
  */
 export const toggleSave = async (
   candidateId: string,
-  source: 'ranked_candidates' | 'ranked_candidates_from_resume',
+  // --- THIS LINE IS UPDATED ---
+  source: 'ranked_candidates' | 'ranked_candidates_from_resume' | 'linkedin',
   saveForFuture: boolean
 ): Promise<{ candidate_id: string; save_for_future: boolean }> => {
   const response = await fetch(`/api/favorites/toggle-save`, {
