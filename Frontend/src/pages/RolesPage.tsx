@@ -18,8 +18,13 @@ export default function RolesPage() {
   const [uploading, setUploading] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null);
+  
+  // --- MODIFIED: Sorting and Filtering State ---
   const [sort, setSort] = useState<string>('created_at');
+  const [sortOrder, setSortOrder] = useState<string>('desc'); // New State for Order
   const [filter, setFilter] = useState<string>('all');
+  // --------------------------------------------
+
   const [roleToDelete, setRoleToDelete] = useState<Role | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -47,7 +52,8 @@ export default function RolesPage() {
         setIsLoading(true);
         setError(null);
         try {
-          const userRoles = await getRoles(sort, filter);
+          // --- MODIFIED: Pass sortOrder to API ---
+          const userRoles = await getRoles(sort, filter, sortOrder);
           setRoles(userRoles);
 
           const navSelectedId = (location?.state as any)?.selectedRoleId as string | undefined;
@@ -80,7 +86,8 @@ export default function RolesPage() {
     } else if (!isAuthLoading) {
       setIsLoading(false);
     }
-  }, [user, isAuthLoading, sort, filter, location, navigate]);
+    // --- MODIFIED: Add sortOrder to dependency array ---
+  }, [user, isAuthLoading, sort, filter, sortOrder, location, navigate]);
 
   useEffect(() => {
     if (openEditorForRoleId && selectedRole?.id === openEditorForRoleId) {
@@ -207,6 +214,10 @@ export default function RolesPage() {
               onNewRoleClick={() => setIsModalOpen(true)}
               sort={sort}
               filter={filter}
+              // --- MODIFIED: Pass new props to RoleList ---
+              sortOrder={sortOrder} 
+              onSortOrderChange={setSortOrder}
+              // ------------------------------------------
               onSortChange={setSort}
               onFilterChange={setFilter}
               onDeleteRole={handleDeleteRequest}
@@ -226,12 +237,12 @@ export default function RolesPage() {
                   </div>
                 )}
                 <RoleDetails
-  role={selectedRole}
-  onUpdateStatus={(newStatus) => handleUpdateStatus(selectedRole.id, newStatus)}
-  onUpdateContent={handleUpdateRoleContent}
-  startEditing={Boolean(openEditorForRoleId && selectedRole?.id === openEditorForRoleId)}
-  onDelete={handleDeleteRequest}
-/>
+                  role={selectedRole}
+                  onUpdateStatus={(newStatus) => handleUpdateStatus(selectedRole.id, newStatus)}
+                  onUpdateContent={handleUpdateRoleContent}
+                  startEditing={Boolean(openEditorForRoleId && selectedRole?.id === openEditorForRoleId)}
+                  onDelete={handleDeleteRequest}
+                />
               </>
             ) : (
               <div className="text-center text-slate-500">{user ? 'No roles found. Select "New Role" to begin.' : 'Please log in to view roles.'}</div>

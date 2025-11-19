@@ -20,7 +20,12 @@ export interface JdSummary {
   // backend may return key_requirements as a comma string or as an array
   key_requirements?: string | string[] | null;
   status?: RoleStatus;
-  // optional candidate stats (may or may not be present)
+  
+  // --- UPDATED: Backend sends these as top-level integers ---
+  candidates_liked?: number;
+  candidates_contacted?: number;
+
+  // Keeping this for potential backward compatibility
   candidate_stats?: {
     liked?: number;
     contacted?: number;
@@ -61,8 +66,9 @@ const mapJdSummaryToRole = (jd: JdSummary): Role => ({
   key_requirements: parseKeyRequirements(jd.key_requirements),
 
   candidateStats: {
-    liked: jd.candidate_stats?.liked ?? 0,
-    contacted: jd.candidate_stats?.contacted ?? 0,
+    // Fix: Check top-level fields first as per the updated backend response
+    liked: jd.candidates_liked ?? jd.candidate_stats?.liked ?? 0,
+    contacted: jd.candidates_contacted ?? jd.candidate_stats?.contacted ?? 0,
   },
   status: jd.status ?? 'open',
 });
@@ -71,12 +77,13 @@ const mapJdSummaryToRole = (jd: JdSummary): Role => ({
  * Fetches real job descriptions uploaded by the current user using cookie authentication.
  * Returns raw backend DTO (JdSummary[]).
  */
-export const fetchJdsForUser = async (sort?: string, filter?: string): Promise<JdSummary[]> => {
+export const fetchJdsForUser = async (sort?: string, filter?: string, order?: string): Promise<JdSummary[]> => {
   // --- START: CORRECTED CODE ---
   let url = `/api/roles/`;
   const params = new URLSearchParams();
   if (sort) params.append('sort', sort);
   if (filter) params.append('filter', filter);
+  if (order) params.append('order', order); // Added order param
 
   const queryString = params.toString();
   if (queryString) {
@@ -131,8 +138,8 @@ export const createRole = async (file: File): Promise<Role> => {
 /**
  * Wrapper: getRoles() - returns transformed Role[] for frontend consumption.
  */
-export const getRoles = async (sort?: string, filter?: string): Promise<Role[]> => {
-  const jds = await fetchJdsForUser(sort, filter);
+export const getRoles = async (sort?: string, filter?: string, order?: string): Promise<Role[]> => {
+  const jds = await fetchJdsForUser(sort, filter, order);
   return jds.map(mapJdSummaryToRole);
 };
 

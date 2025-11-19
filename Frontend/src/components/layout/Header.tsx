@@ -1,21 +1,32 @@
 // src/components/layout/Header.tsx
 import { Search, Briefcase, BarChart3, ArrowLeft, LogOut } from 'lucide-react';
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 
 interface HeaderProps {
   userName: string;
   showBackButton?: boolean;
 }
 
-const NavLink = ({ children, description, to }: { children: React.ReactNode; description: string; to: string }) => (
-  <Link to={to} className="group relative flex items-center gap-2 text-gray-600 hover:text-teal-500 font-medium transition-colors py-2">
-    {children}
-    <div className="absolute top-full mt-2 w-max p-3 bg-white text-gray-800 border border-gray-200 text-sm rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-      {description}
-    </div>
-  </Link>
-);
+// --- MODIFIED: Updated NavLink to highlight active state ---
+const NavLink = ({ children, description, to }: { children: React.ReactNode; description: string; to: string }) => {
+  const location = useLocation();
+  const isActive = location.pathname === to;
+
+  return (
+    <Link 
+      to={to} 
+      className={`group relative flex items-center gap-2 font-medium transition-colors py-2
+        ${isActive ? 'text-teal-600' : 'text-gray-600 hover:text-teal-500'}
+      `}
+    >
+      {children}
+      <div className="absolute top-full mt-2 w-max p-3 bg-white text-gray-800 border border-gray-200 text-sm rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+        {description}
+      </div>
+    </Link>
+  );
+};
 
 export function Header({ userName, showBackButton = false }: HeaderProps) {
   const navigate = useNavigate();
@@ -42,11 +53,9 @@ export function Header({ userName, showBackButton = false }: HeaderProps) {
             <ArrowLeft size={20} />
           </button>
         )}
-        {/* --- START: CORRECTED LOGO LINK --- */}
         <Link to="/" className="text-xl font-bold text-teal-600 no-underline">
           AIRA
         </Link>
-        {/* --- END: CORRECTED LOGO LINK --- */}
         <nav className="hidden md:flex items-center gap-6 ml-4">
           <NavLink to="/search" description="Find the perfect candidate">
             <Search size={18} /> Search

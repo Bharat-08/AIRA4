@@ -9,10 +9,14 @@ interface RoleListProps {
   onSelectRole: (role: Role) => void;
   onNewRoleClick: () => void;
   onDeleteRole: (roleId: string) => void;
+  
   sort: string;
   filter: string;
+  sortOrder: string; // --- NEW PROP ---
+  
   onSortChange: (value: string) => void;
   onFilterChange: (value: string) => void;
+  onSortOrderChange: (value: string) => void; // --- NEW PROP ---
 }
 
 const RoleList: React.FC<RoleListProps> = ({
@@ -23,16 +27,27 @@ const RoleList: React.FC<RoleListProps> = ({
   onDeleteRole,
   sort,
   filter,
+  sortOrder,
   onSortChange,
   onFilterChange,
+  onSortOrderChange,
 }) => {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isSortOpen, setIsSortOpen] = useState(false);
+  const [isOrderOpen, setIsOrderOpen] = useState(false); // --- NEW STATE ---
 
   const filterOptions = ['all', 'open', 'close', 'deprioritized'];
+  
+  // Sort Field Options
   const sortOptions = {
     'created_at': 'Created Date',
     'updated_at': 'Updated Date',
+  };
+  
+  // --- NEW: Sort Order Options ---
+  const orderOptions = {
+    'asc': 'Ascending',
+    'desc': 'Descending',
   };
 
   return (
@@ -82,7 +97,37 @@ const RoleList: React.FC<RoleListProps> = ({
               </div>
             )}
           </div>
-          {/* Sort By Dropdown */}
+
+          {/* --- NEW: Sort Order Dropdown (Ascending/Descending) --- */}
+          <div className="relative w-full">
+            <button
+              onClick={() => setIsOrderOpen(!isOrderOpen)}
+              onBlur={() => setTimeout(() => setIsOrderOpen(false), 150)}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 border border-slate-200 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 w-full"
+            >
+              Order <ChevronDown size={16} />
+            </button>
+            {isOrderOpen && (
+              <div className="absolute z-10 mt-1 w-full bg-white shadow-lg border rounded-md">
+                {Object.entries(orderOptions).map(([value, label]) => (
+                  <button
+                    key={value}
+                    onClick={() => {
+                      onSortOrderChange(value);
+                      setIsOrderOpen(false);
+                    }}
+                    className={`block w-full text-left px-4 py-2 text-sm ${
+                      sortOrder === value ? 'bg-teal-50 text-teal-700' : 'text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Sort By Dropdown (Created/Updated) */}
           <div className="relative w-full">
             <button
               onClick={() => setIsSortOpen(!isSortOpen)}

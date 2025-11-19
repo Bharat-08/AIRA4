@@ -6,16 +6,16 @@ from pydantic import BaseModel
 import os
 from datetime import datetime, timedelta
 from app.services.jd_parsing_service import process_jd_file, parse_jd_text
-from app.dependencies import get_current_user, get_supabase_client
+from app.dependencies import get_current_user, get_supabase_client, get_db
 from app.models.user import User
 from app.schemas.jd import JdSummary, JdUpdateContent
 from app.services.jd_parsing_service import process_jd_file
 from app.models.linkedin import LinkedIn
 from app.schemas.linkedin import LinkedInCandidate
-from app.dependencies import get_db, get_current_user
 from sqlalchemy.orm import Session
-from fastapi import Query
-from datetime import datetime
+from sqlalchemy import func, asc, desc
+from app.models.jd import JD
+from app.models.candidate import RankedCandidate
 
 router = APIRouter(
     tags=["Roles & JDs"],
@@ -27,40 +27,82 @@ class RoleStatusUpdate(BaseModel):
 @router.get("/", response_model=List[JdSummary])
 async def get_user_jds(
     current_user: User = Depends(get_current_user),
-    supabase = Depends(get_supabase_client),
+    db: Session = Depends(get_db),
     sort: Optional[str] = Query("created_at", description="Sort by 'created_at' or 'updated_at'"),
+    order: Optional[str] = Query("desc", description="Order direction: 'asc' or 'desc'"),
     filter: Optional[str] = Query("all", description="Filter by status: 'all', 'open', 'closed', 'de-prioritized'")
 ):
     """
     Fetches a list of all Job Descriptions (JDs) for the logged-in user.
+    Calculates actual counts for liked and contacted candidates.
     """
     try:
-        # --- MODIFICATION: Added "jd_text" to the select query ---
-        query = supabase.table("jds").select(
-            "jd_id", "role", "location", "job_type", "experience_required",
-            "jd_parsed_summary", "jd_text", "created_at", "updated_at", "key_requirements",
-            "status", "candidates_liked", "candidates_contacted"
-        ).eq("user_id", str(current_user.id))
+        # Subquery for counting liked candidates (favorite=True)
+        liked_subquery = (
+            db.query(func.count(RankedCandidate.rank_id))
+            .filter(RankedCandidate.jd_id == JD.jd_id)
+            .filter(RankedCandidate.favorite == True)
+            .correlate(JD)
+            .scalar_subquery()
+        )
 
+        # Subquery for counting contacted candidates (contacted=True)
+        contacted_subquery = (
+            db.query(func.count(RankedCandidate.rank_id))
+            .filter(RankedCandidate.jd_id == JD.jd_id)
+            .filter(RankedCandidate.contacted == True)
+            .correlate(JD)
+            .scalar_subquery()
+        )
+
+        # Main query selecting JD and the computed counts
+        query = db.query(
+            JD,
+            liked_subquery.label("real_liked_count"),
+            contacted_subquery.label("real_contacted_count")
+        ).filter(JD.user_id == current_user.id)
+
+        # Apply filtering
         if filter and filter != "all":
-            query = query.eq("status", filter)
+            query = query.filter(JD.status == filter)
 
-        if sort:
-            query = query.order(sort, desc=True)
+        # Apply sorting
+        # Determine which column to sort by
+        if sort == "updated_at":
+            sort_column = JD.updated_at
         else:
-            # Default sort if none is provided
-            query = query.order("created_at", desc=True)
+            sort_column = JD.created_at
 
-        response = query.execute()
+        # Apply direction
+        if order == "asc":
+            query = query.order_by(sort_column.asc())
+        else:
+            query = query.order_by(sort_column.desc())
 
-        if not response.data:
-            return []
+        results = query.all()
 
-        # Directly pass the data for Pydantic to validate
-        roles_to_return = [JdSummary(**item) for item in response.data]
+        # Convert SQLAlchemy objects + counts to Pydantic models
+        roles_to_return = []
+        for jd_obj, liked_count, contacted_count in results:
+            # Create a dictionary from the SQLAlchemy object
+            jd_dict = {c.name: getattr(jd_obj, c.name) for c in jd_obj.__table__.columns}
+            
+            # --- FIX: Convert UUIDs to strings to satisfy Pydantic validation ---
+            if jd_dict.get("jd_id"):
+                jd_dict["jd_id"] = str(jd_dict["jd_id"])
+            if jd_dict.get("user_id"):
+                jd_dict["user_id"] = str(jd_dict["user_id"])
+            
+            # Override the static counts with the calculated ones
+            jd_dict["candidates_liked"] = liked_count or 0
+            jd_dict["candidates_contacted"] = contacted_count or 0
+            
+            roles_to_return.append(JdSummary(**jd_dict))
+
         return roles_to_return
 
     except Exception as e:
+        # Improved error logging to see the specific validation error
         print(f"Error fetching roles for user {current_user.id}: {e}")
         raise HTTPException(status_code=500, detail="Could not fetch roles.")
 
@@ -126,21 +168,12 @@ def update_jd_content(
         if not isinstance(parsed_fields, dict):
             parsed_fields = {}
 
-        # 3. Build the update payload: always include jd_text and merge in parsed fields.
-        # If parse_jd_text returns keys that don't match your DB columns, map them here.
+        # 3. Build the update payload
         update_payload = {"jd_text": content_update.jd_text}
-        # Merge parsed fields (parser keys should align with DB columns like 'role', 'location', 'key_requirements', etc.)
         update_payload.update(parsed_fields)
 
-        # Example mapping (uncomment and adjust if your parser returns different key names):
-        # mapped_payload = {
-        #     "jd_text": content_update.jd_text,
-        #     "role": parsed_fields.get("title") or parsed_fields.get("role"),
-        #     "location": parsed_fields.get("location"),
-        #     "key_requirements": parsed_fields.get("key_requirements") or parsed_fields.get("requirements"),
-        #     # add other mappings as needed
-        # }
-        # update_payload = mapped_payload
+        # --- FIX: Manually update updated_at timestamp ---
+        update_payload["updated_at"] = datetime.now().isoformat()
 
         # 4. Update the row in Supabase
         update_response = supabase.table("jds").update(update_payload).eq("jd_id", jd_id).execute()
@@ -183,27 +216,25 @@ def update_jd_status(
         if str(owner_check.data.get("user_id")) != str(current_user.id):
             raise HTTPException(status_code=403, detail="Not authorized to update this role")
 
-        # 1. Perform the update without requesting immediate return data
-        # This is the most stable way to perform an update in Supabase-py
+        # 1. Perform the update
+        # --- FIX: Also update updated_at when status changes ---
         update_response = supabase.table("jds").update(
-            {"status": status_update.status}
+            {
+                "status": status_update.status,
+                "updated_at": datetime.now().isoformat()
+            }
         ).eq("jd_id", jd_id).execute()
 
-        # 2. Check if the update succeeded and then manually fetch the updated row.
-        # This guarantees we get the full JdSummary data, including the updated 'updated_at' timestamp.
+        # 2. Fetch updated row
         updated_row_response = supabase.table("jds").select("*").eq("jd_id", jd_id).single().execute()
 
 
         if not updated_row_response.data:
-            # If the update occurred but we can't fetch the data (shouldn't happen if row exists)
             raise HTTPException(status_code=500, detail="Failed to retrieve updated role status from database.")
 
         updated_data = updated_row_response.data
 
-        # We must adjust the retrieval to account for the Supabase single() structure
-        # If .single() is used, updated_data is the dictionary itself, not a list of one item.
         if isinstance(updated_data, list):
-            # If the Supabase client returns a list (e.g., if .single() wasn't used or behaves differently)
             updated_data = updated_data[0]
 
         return JdSummary(**updated_data)
@@ -259,11 +290,6 @@ def get_linkedin_candidates(
 
     Full route:
         GET /api/v1/roles/{jd_id}/linkedin_candidates?created_after=<ISO_TIMESTAMP>
-
-    Behavior:
-    - Only returns rows inserted after `created_after`
-    - Includes a small tolerance window (default = 10 minutes)
-    - Filters by current user + JD
     """
     try:
         # Parse ISO 8601 timestamp safely

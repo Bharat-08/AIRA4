@@ -1,8 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Role, RoleStatus } from '../../types/role';
-// CHANGED: Removed Trash2, it's not needed
-import { ChevronDown, Edit3, Save, X } from 'lucide-react'; 
+import { ChevronDown, Edit3, Save, X, Search } from 'lucide-react'; 
 import { editRoleContent } from '../../api/roles';
 
 interface RoleDetailsProps {
@@ -10,7 +9,7 @@ interface RoleDetailsProps {
   onUpdateStatus: (status: RoleStatus) => void;
   onUpdateContent: (updatedRole: Role) => void;
   startEditing?: boolean;
-  onDelete?: (roleId: string) => void; // parent should provide delete handler
+  onDelete?: (roleId: string) => void;
 }
 
 const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdateContent, startEditing, onDelete }) => {
@@ -21,7 +20,6 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
   const [isSaving, setIsSaving] = useState(false);
   const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
 
-  // Sync editedContent when role.full_content changes
   useEffect(() => {
     setEditedContent(role.full_content || '');
     setIsEditing(false);
@@ -70,6 +68,10 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
     navigate(`/pipeline/${role.id}`);
   };
 
+  const handleGoToSearch = () => {
+    navigate('/search', { state: { roleId: role.id } });
+  };
+
   const getStatusStyles = (status: RoleStatus) => {
     switch (status) {
       case 'open':
@@ -88,6 +90,9 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
     if (onDelete) onDelete(role.id);
   };
 
+  // Helper to check if search should be disabled
+  const isSearchDisabled = role.status !== 'open';
+
   return (
     <div className="flex flex-col h-full">
       <div className="pb-5 border-b border-slate-100 mb-6">
@@ -102,8 +107,6 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
                 </p>
             </div>
 
-            {/* status dropdown + delete button */}
-            {/* CHANGED: Added 'flex-shrink-0' to prevent this div from shrinking and causing an overlap */}
             <div className="flex-shrink-0 flex items-start gap-2">
                 <div className="relative inline-block text-left">
                     <button 
@@ -134,7 +137,6 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
                     </div>
                 </div>
 
-                {/* Red Delete button (no icon) - This is the style you wanted */}
                 <button
                   onClick={handleDeleteClick}
                   className="inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-semibold bg-red-600 text-white hover:bg-red-700"
@@ -233,12 +235,28 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
           Candidates Liked: <span className="font-semibold text-slate-900">{role.candidateStats.liked}</span> | Candidates Contacted: <span className="font-semibold text-slate-900">{role.candidateStats.contacted}</span>
         </p>
 
-        <button
-          onClick={handleGoToPipeline}
-          className="px-4 py-2 border border-slate-300 text-sm font-medium rounded-md shadow-sm text-slate-700 bg-white hover:bg-slate-50"
-        >
-          Go to Pipeline
-        </button>
+        <div className="flex gap-3">
+            {/* Go to Search Button: Disabled/Greyed out if status != 'open' */}
+            <button
+              onClick={handleGoToSearch}
+              disabled={isSearchDisabled}
+              className={`px-4 py-2 border text-sm font-medium rounded-md shadow-sm flex items-center gap-2 transition-colors
+                ${isSearchDisabled 
+                  ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' 
+                  : 'border-teal-600 text-teal-700 bg-white hover:bg-teal-50 cursor-pointer'
+                }`}
+            >
+              <Search className="h-4 w-4" />
+              Go to Search
+            </button>
+
+          <button
+            onClick={handleGoToPipeline}
+            className="px-4 py-2 border border-slate-300 text-sm font-medium rounded-md shadow-sm text-slate-700 bg-white hover:bg-slate-50"
+          >
+            Go to Pipeline
+          </button>
+        </div>
       </div>
     </div>
   );
