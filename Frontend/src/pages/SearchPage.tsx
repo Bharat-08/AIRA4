@@ -12,7 +12,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { User } from '../types/user';
-import { uploadJdFile, uploadResumeFiles } from '../api/upload';
+// ✅ UPDATED: Import uploadBulkJds
+import { uploadJdFile, uploadResumeFiles, uploadBulkJds } from '../api/upload';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
 import CandidatePopupCard from '../components/ui/CandidatePopupCard';
 import JdPopupCard from '../components/ui/JdPopupCard';
@@ -114,6 +115,9 @@ export function SearchPage({ user }: { user: User }) {
 
   const isRestoringRef = useRef<boolean>(true);
 
+  // ✅ Limit for uploads
+  const MAX_FILES_LIMIT = 3;
+
   const STORAGE_KEY = useMemo(() => {
     const maybeId = (user as unknown as { id?: string })?.id;
     return `search_candidates_v1::${maybeId ?? user.name ?? 'anon'}`;
@@ -186,21 +190,75 @@ export function SearchPage({ user }: { user: User }) {
     })();
   }, [STORAGE_KEY]);
 
+  // ✅ UPDATED: Handle Single (Sync) or Bulk (Async) Uploads
   const handleJdFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files[0]) {
-      const file = event.target.files[0];
+    const files = event.target.files;
+    if (files && files.length > 0) {
+      
+      // 1. Check limit
+      if (files.length > MAX_FILES_LIMIT) {
+        setUploadStatus({ message: `To ensure fast processing, please upload a maximum of ${MAX_FILES_LIMIT} files at a time.`, type: 'error' });
+        if (jdInputRef.current) jdInputRef.current.value = ''; // reset input
+        return;
+      }
+
       setIsJdLoading(true);
       setUploadStatus(null);
+
       try {
-        const newJd = await uploadJdFile(file);
-        const updatedJds = await fetchJdsForUser();
-        setUserJds(updatedJds);
-        handleJdSelection(newJd.jd_id, updatedJds);
-        setUploadStatus({ message: 'JD uploaded and selected!', type: 'success' });
+        // 2. Single File Strategy (Keep it Sync for better UX - auto-select)
+        if (files.length === 1) {
+            const file = files[0];
+            const newJd = await uploadJdFile(file);
+            const updatedJds = await fetchJdsForUser();
+            setUserJds(updatedJds);
+            handleJdSelection(newJd.jd_id, updatedJds);
+            setUploadStatus({ message: 'JD uploaded and selected!', type: 'success' });
+            setIsJdLoading(false); // ✅ Stop loading immediately for single file
+        } 
+        // 3. Bulk File Strategy (Async Queue)
+        else {
+            await uploadBulkJds(files);
+            setUploadStatus({ message: 'JDs queued. Processing in background...', type: 'success' });
+            
+            // ✅ KEY CHANGE: We keep isJdLoading(true) so the button stays disabled while parsing
+            
+            const startCount = userJds.length;
+            const expectedCount = startCount + files.length;
+            
+            let attempts = 0;
+            const intervalId = setInterval(async () => {
+                attempts++;
+                try {
+                    const updatedJds = await fetchJdsForUser();
+                    setUserJds(updatedJds);
+                    
+                    // ✅ Check if processing is done (count increased by number of files)
+                    if (updatedJds.length >= expectedCount) {
+                        setUploadStatus({ message: 'All JDs parsed successfully!', type: 'success' });
+                        setIsJdLoading(false); // ✅ Re-enable button
+                        clearInterval(intervalId);
+                        
+                        // If user had no roles before, auto-select the first one
+                        if (startCount === 0 && updatedJds.length > 0) {
+                             handleJdSelection(updatedJds[0].jd_id, updatedJds);
+                        }
+                    } else if (attempts > 24) { // Timeout after ~2 minutes
+                         setUploadStatus({ message: 'Bulk processing completed (check dropdown).', type: 'success' });
+                         setIsJdLoading(false); // ✅ Re-enable button
+                         clearInterval(intervalId);
+                    }
+                } catch (e) { 
+                    console.error("Polling error", e);
+                }
+            }, 5000);
+        }
+
       } catch (error) {
         setUploadStatus({ message: (error as Error).message, type: 'error' });
+        setIsJdLoading(false); // Stop loading on error
       } finally {
-        setIsJdLoading(false);
+        if (jdInputRef.current) jdInputRef.current.value = ''; // reset input
       }
     }
   };
@@ -635,6 +693,8 @@ export function SearchPage({ user }: { user: User }) {
     let buttonText = 'Search and Rank';
     if (sourcingOption === 'db') buttonText = 'Rank';
     if (sourcingOption === 'gl') buttonText = 'Start Sourcing';
+    
+    // ✅ UPDATED: Disable button if JD is loading (including bulk upload)
     return (
       <button
         onClick={handleSearchAndRank}
@@ -750,7 +810,15 @@ export function SearchPage({ user }: { user: User }) {
                 >
                   <Plus size={14} /> Add New Role
                 </button>
-                <input type="file" ref={jdInputRef} onChange={handleJdFileChange} className="hidden" accept=".pdf,.docx,.txt" />
+                {/* ✅ UPDATED: Allow multiple file selection */}
+                <input 
+                  type="file" 
+                  ref={jdInputRef} 
+                  onChange={handleJdFileChange} 
+                  className="hidden" 
+                  accept=".pdf,.docx,.txt" 
+                  multiple 
+                />
               </div>
 
               <select

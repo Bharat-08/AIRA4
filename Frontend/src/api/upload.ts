@@ -60,3 +60,30 @@ export const uploadResumeFiles = async (files: FileList, jdId: string): Promise<
 
   return response.json();
 };
+
+/**
+ * Uploads multiple JD files to the backend for async processing.
+ * * @param files The list of JD files to upload.
+ * @returns The result of the queuing process.
+ */
+export const uploadBulkJds = async (files: FileList) => {
+  const formData = new FormData();
+
+  // Append all files under the same key 'files' which matches the backend List[UploadFile]
+  for (let i = 0; i < files.length; i++) {
+    formData.append('files', files[i]);
+  }
+
+  const response = await fetch(`/api/upload/bulk-jds`, {
+    method: 'POST',
+    body: formData,
+    credentials: 'include', // Required to send the auth cookie
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.detail || 'Failed to upload JDs');
+  }
+
+  return response.json();
+};

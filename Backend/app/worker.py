@@ -211,3 +211,53 @@ def google_linkedin_task(jd_id: str, user_id: str, custom_prompt: str = ""):
     except Exception as e:
         logger.exception("google_linkedin_task failed: %s", e)
         return {"status": "failed", "error": str(e)}
+
+
+# =============================
+# NEW TASK: Bulk JD Parsing
+# =============================
+
+@celery_app.task(bind=True)
+def parse_jd_async_task(self, file_content: bytes, filename: str, user_id: str):
+    """
+    Task to process a single JD file asynchronously.
+    This isolates the heavy lifting (PDF parsing + Gemini API) from the user request.
+    """
+    logger = logging.getLogger(__name__)
+    logger.info(f"Task started: Parsing JD {filename} for user {user_id}")
+
+    tmp_path = None
+    try:
+        # Import here to avoid potential circular dependencies at top-level
+        from app.dependencies import get_supabase_client
+        from app.services.jd_parsing_service import process_jd_file
+
+        # Create a temporary file because 'process_jd_file' expects a Path
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp:
+            tmp.write(file_content)
+            tmp_path = Path(tmp.name)
+
+        # Initialize Supabase client inside the worker process
+        supabase = get_supabase_client()
+        
+        # Call the existing parsing service
+        result = process_jd_file(
+            supabase=supabase,
+            file_path=tmp_path,
+            user_id=user_id
+        )
+        
+        logger.info(f"Task success: JD {filename} parsed, ID: {result.get('jd_id')}")
+        return {"status": "success", "filename": filename, "jd_id": result.get("jd_id")}
+        
+    except Exception as e:
+        logger.exception(f"Failed to parse JD {filename}")
+        return {"status": "failed", "filename": filename, "error": str(e)}
+        
+    finally:
+        # Cleanup temp file
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass

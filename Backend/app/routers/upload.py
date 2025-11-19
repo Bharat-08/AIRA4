@@ -10,11 +10,16 @@ from app.services.jd_parsing_service import process_jd_file
 from app.services.resume_parsing_service import extract_text, parse_resume_text
 from app.models.user import User
 from app.config import settings
+# Import the async task
+from app.worker import parse_jd_async_task
 
 router = APIRouter(
     prefix="/upload",
     tags=["Upload & Parse"],
 )
+
+# Limit for bulk uploads to ensure server stability
+MAX_BATCH_SIZE = 3
 
 # This endpoint for JD uploads is preserved and remains unchanged.
 @router.post("/jd")
@@ -45,7 +50,6 @@ async def upload_jd(
         if tmp_path.exists():
             tmp_path.unlink()
 
-# --- FINAL CORRECTED VERSION ---
 # This endpoint now correctly parses resumes and saves them to the 'resume' table.
 @router.post("/resumes")
 async def upload_resumes(
@@ -108,3 +112,51 @@ async def upload_resumes(
 
     return {"successful_uploads": len(rows_to_insert), "failed_uploads": errors}
 
+
+# ==========================================
+# NEW ENDPOINT: Bulk JD Uploads (Async)
+# ==========================================
+@router.post("/bulk-jds")
+async def upload_bulk_jds(
+    files: List[UploadFile] = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Accepts multiple files and queues them for async processing via Celery.
+    Enforced limit: 3 files max.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+
+    if len(files) > MAX_BATCH_SIZE:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Batch upload limit exceeded. To ensure system stability, please upload a maximum of {MAX_BATCH_SIZE} files at a time."
+        )
+
+    enqueued_files = []
+    errors = []
+
+    for file in files:
+        try:
+            # Read file content into memory to pass to Celery
+            # JDs are usually small text/pdf files, so reading into memory is safe for small batches.
+            content = await file.read()
+            
+            # Trigger the Celery task
+            task = parse_jd_async_task.delay(
+                file_content=content,
+                filename=file.filename,
+                user_id=str(current_user.id)
+            )
+            enqueued_files.append({"filename": file.filename, "task_id": task.id})
+            
+        except Exception as e:
+            errors.append({"filename": file.filename, "error": str(e)})
+
+    return {
+        "message": f"Queued {len(enqueued_files)} files for background processing.",
+        "queued_count": len(enqueued_files),
+        "enqueued_files": enqueued_files,
+        "errors": errors
+    }
