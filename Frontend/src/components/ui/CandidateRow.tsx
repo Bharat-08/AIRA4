@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Link as LinkIcon,
   Star,
@@ -12,6 +12,9 @@ import type { Candidate } from "../../types/candidate";
 import { generateLinkedInUrl } from "../../api/search";
 import CallSchedulePopup from "./CallSchedulePopup";
 import RecommendPopup from "./RecommendPopup";
+// ✅ Import API and Types
+import { recommendCandidate } from "../../api/pipeline";
+import type { JdSummary } from "../../api/roles";
 
 interface CandidateRowProps {
   candidate: Candidate;
@@ -28,6 +31,8 @@ interface CandidateRowProps {
     save_for_future: boolean
   ) => Promise<void> | void;
   source?: "ranked_candidates" | "ranked_candidates_from_resume";
+  // ✅ NEW: List of User JDs for recommendation
+  userJds?: JdSummary[];
 }
 
 export function CandidateRow({
@@ -37,6 +42,7 @@ export function CandidateRow({
   onToggleFavorite,
   onToggleSave,
   source = "ranked_candidates",
+  userJds = [], // Default to empty
 }: CandidateRowProps) {
   const [isGeneratingUrl, setIsGeneratingUrl] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,13 +52,23 @@ export function CandidateRow({
   const [isCallPopupOpen, setIsCallPopupOpen] = useState(false);
   const [isRecommendPopupOpen, setIsRecommendPopupOpen] = useState(false);
 
-  // optimistic UI states (use save_for_future from candidate)
-  // Check both 'favorite' and 'favourite' due to inconsistent naming across models
+  // optimistic UI states
   const initialFav = (candidate as any).favorite || (candidate as any).favourite || false;
-  const [isFav, setIsFav] = useState<boolean>(!!initialFav);
-  const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).save_for_future);
+  const initialSaved = (candidate as any).save_for_future || false;
 
-  // ---- Robust display fields (covers all shapes coming from web + resume pipelines) ----
+  const [isFav, setIsFav] = useState<boolean>(!!initialFav);
+  const [isSaved, setIsSaved] = useState<boolean>(!!initialSaved);
+
+  // Sync local state when parent props change
+  useEffect(() => {
+    setIsFav(!!((candidate as any).favorite || (candidate as any).favourite));
+  }, [candidate.favorite, (candidate as any).favourite]);
+
+  useEffect(() => {
+    setIsSaved(!!(candidate as any).save_for_future);
+  }, [candidate.save_for_future]);
+
+  // ---- Robust display fields ----
   const displayName =
     candidate.profile_name || // from 'search' table
     candidate.person_name || // from 'resume' table
@@ -79,16 +95,13 @@ export function CandidateRow({
     (candidate as any).id || // Keep this as a final fallback
     "";
 
-  // --- FIX IS HERE ---
   // profileUrl should NOT fall back to linkedin_url
   const profileUrl =
     candidate.profile_url || // from 'search' OR 'resume'
-    (candidate as any).validated_url || // This isn't in the schema, so leave as 'any'
+    (candidate as any).validated_url ||
     "";
 
-  // --- FIX IS HERE ---
   // linkedinUrl should NOT fall back to profile_url
-  // It should only be a *real* linkedin_url or the newly generated one.
   const linkedinUrl = generatedUrl || candidate.linkedin_url || "";
 
   const matchScorePct = Math.round(Number(candidate.match_score || 0));
@@ -170,15 +183,33 @@ export function CandidateRow({
     setIsCallPopupOpen(false);
   };
 
-  const handleRecommendSend = (type: "role" | "team", selection: string) => {
-    // eslint-disable-next-line no-console
-    console.info(`Recommended ${displayName} to ${type}: ${selection}`);
+  // ✅ UPDATED: Handle recommendation to role via API
+  const handleRecommendSend = async (type: "role" | "team", selection: string) => {
+    if (type === "role") {
+      try {
+        // Use rank_id if available (preferred for DB updates), else profileId
+        const idToSend = candidate.rank_id || String(profileId);
+        
+        // Call API to create/update recommendation
+        await recommendCandidate(idToSend, source, selection);
+        
+        console.info(`Successfully recommended ${displayName} to role ${selection}`);
+      } catch (err) {
+        console.error("Failed to recommend to role", err);
+        // Optional: Trigger a toast error here
+      }
+    } else {
+        console.info(`Recommended ${displayName} to team: ${selection}`);
+    }
+
+    // Update local state/timestamp
     try {
       onUpdateCandidate({
         ...(candidate as any),
         last_recommended_at: new Date().toISOString(),
       } as Candidate);
     } catch {}
+    
     setIsRecommendPopupOpen(false);
   };
 
@@ -186,11 +217,9 @@ export function CandidateRow({
     e.preventDefault();
     e.stopPropagation();
 
-    // --- FIX: DETERMINE CORRECT ID TO SEND ---
+    // Determine correct ID
     let idToSend = String(profileId);
     
-    // If using ranked/resume tables, we MUST use rank_id to update the specific row.
-    // Profile_id might be ambiguous if the candidate is applied to multiple JDs.
     if (source === 'ranked_candidates' || source === 'ranked_candidates_from_resume') {
       if (candidate.rank_id) {
         idToSend = String(candidate.rank_id);
@@ -198,7 +227,6 @@ export function CandidateRow({
         console.warn("CandidateRow: Missing rank_id for ranked candidate. Update may fail.");
       }
     }
-    // If source is 'linkedin', we stick to profileId (which maps to linkedin_profile_id)
 
     const newVal = !isFav;
     setIsFav(newVal); // Optimistic update
@@ -215,20 +243,16 @@ export function CandidateRow({
     }
   };
 
-  // ✅ NEW: Save/Bookmark handler (async, optimistic, revert on failure)
   const handleSaveClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
-    // --- FIX: DETERMINE CORRECT ID TO SEND ---
     let idToSend = String(profileId);
 
     if (source === 'ranked_candidates' || source === 'ranked_candidates_from_resume') {
       if (candidate.rank_id) {
         idToSend = String(candidate.rank_id);
       }
-      // If rank_id is missing, we continue with profileId, though it might not work perfectly on backend
-      // But for 'unsaved' optimistic toggle below, it doesn't matter yet.
     }
 
     if (!idToSend && !candidate.rank_id) {
@@ -245,7 +269,6 @@ export function CandidateRow({
 
     const newSaved = !isSaved;
     setIsSaved(newSaved); // optimistic UI
-    // Update parent locally
     onUpdateCandidate({ ...(candidate as any), save_for_future: newSaved } as Candidate);
 
     if (!onToggleSave) {
@@ -306,7 +329,6 @@ export function CandidateRow({
             <LinkIcon size={18} />
           </a>
 
-          {/* This function now renders the correct element */}
           {renderLinkedInButton()}
         </div>
 
@@ -318,7 +340,7 @@ export function CandidateRow({
             aria-pressed={isSaved}
             className="p-1 rounded hover:bg-slate-100 transition-colors"
           >
-            <Bookmark size={18} className={isSaved ? "text-blue-600" : "text-gray-400"} />
+            <Bookmark size={18} className={isSaved ? "text-blue-600 fill-current" : "text-gray-400"} />
           </button>
 
           <button
@@ -327,7 +349,7 @@ export function CandidateRow({
             aria-pressed={isFav}
             className="p-1 rounded hover:bg-slate-100 transition-colors"
           >
-            <Star size={18} className={isFav ? "text-yellow-400" : "text-gray-400"} />
+            <Star size={18} className={isFav ? "text-yellow-400 fill-current" : "text-gray-400"} />
           </button>
 
           <button
@@ -357,9 +379,7 @@ export function CandidateRow({
         isOpen={isCallPopupOpen}
         onClose={() => setIsCallPopupOpen(false)}
         candidateName={displayName}
-        initialMessage={`Hi ${displayName},
-
-Hope you're doing well. I'd like to schedule a short call to discuss an opportunity. Are you available this week? Please share a few time slots that work for you.`}
+        initialMessage={`Hi ${displayName},\n\nHope you're doing well. I'd like to schedule a short call to discuss an opportunity. Are you available this week? Please share a few time slots that work for you.`}
         onSend={(message, channel) => handleSendFromCallPopup(message, channel)}
       />
 
@@ -368,6 +388,7 @@ Hope you're doing well. I'd like to schedule a short call to discuss an opportun
         isOpen={isRecommendPopupOpen}
         onClose={() => setIsRecommendPopupOpen(false)}
         onSend={(type, selection) => handleRecommendSend(type, selection)}
+        jds={userJds} // ✅ Pass available JDs to popup
       />
     </>
   );

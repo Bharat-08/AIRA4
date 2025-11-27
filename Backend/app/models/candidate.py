@@ -47,6 +47,9 @@ class RankedCandidate(Base):
     # --- NEW COLUMNS ---
     contacted: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
     stage: Mapped[str] = mapped_column(String, server_default="In Consideration", nullable=False)
+    
+    # ✅ NEW: Recommended to Role Flag
+    is_recommended: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
     # --- END NEW COLUMNS ---
 
     # Relationships
@@ -86,6 +89,9 @@ class RankedCandidateFromResume(Base):
     # --- NEW COLUMNS ---
     contacted: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
     stage: Mapped[str] = mapped_column(String, server_default="In Consideration", nullable=False)
+
+    # ✅ NEW: Recommended to Role Flag
+    is_recommended: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
     # --- END NEW COLUMNS ---
 
     # Relationships

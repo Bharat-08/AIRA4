@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Header } from '../components/layout/Header';
-import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight } from 'lucide-react';
+import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download } from 'lucide-react'; // Added Download
 import type { User } from '../types/user';
 
 // --- API & TYPE IMPORTS ---
@@ -10,6 +10,8 @@ import {
   getAllRankedCandidates,
   updateCandidateStage,
   updateCandidateFavoriteStatus,
+  downloadJdPipeline,     // Added
+  downloadAllCandidates,  // Added
 } from '../api/pipeline';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
 import {
@@ -60,9 +62,7 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => 
         </div>
       </div>
       <div className="col-span-2 text-slate-600">{getStatusDisplay(candidate)}</div>
-      {/* --- THIS IS THE FIX --- */}
       <div className="col-span-2 text-slate-600">{candidate.jd_name || 'N/A'}</div>
-      {/* ---------------------- */}
       <div className="col-span-1">
         <a href={candidate.linkedin_url || '#'} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-teal-600">
           <Link size={18} />
@@ -208,7 +208,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
   useEffect(() => {
     const loadJdsAndCandidates = async () => {
       setIsLoading(true);
-      // Reset filters on initial load
       setActiveStatusFilter('all');
       setActiveStageFilter('all');
       setShowStageDropdown(false);
@@ -242,8 +241,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const handleJdSelectionChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newJdId = e.target.value;
     setSelectedJdId(newJdId);
-
-    // Reset filters on JD change
     setActiveStatusFilter('all');
     setActiveStageFilter('all');
     setShowStageDropdown(false);
@@ -268,63 +265,45 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   };
 
-  // Stage change (for role pipeline rows)
   const handleStageChange = async (id: string, newStage: CandidateStage) => {
-    // optimistic UI update
     setCandidates(prev =>
       prev.map(c => c.rank_id === id ? { ...c, stage: newStage } : c)
     );
-
     try {
       await updateCandidateStage(id, newStage);
-      console.log(`Stage updated successfully for ${id}`);
     } catch (error) {
       console.error('Failed to update stage:', error);
     }
   };
 
-  // Favorite toggle (for role pipeline)
   const handleFavoriteToggle = async (rankId: string) => {
     const candidate = candidates.find(c => c.rank_id === rankId);
     if (!candidate) return;
-
     const oldFavorite = candidate.favorite;
     const newFavorite = !oldFavorite;
-
-    // optimistic update
     setCandidates(prev => prev.map(c => c.rank_id === rankId ? { ...c, favorite: newFavorite } : c));
 
     try {
-      // Note: backend toggle expects candidateId and source -> here we pass rank_id and 'ranked_candidates'
       await updateCandidateFavoriteStatus(rankId, newFavorite);
-      console.log(`Favorite toggled for ${rankId}: ${newFavorite}`);
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
-      // rollback
       setCandidates(prev => prev.map(c => c.rank_id === rankId ? { ...c, favorite: oldFavorite } : c));
     }
   };
 
-  // --- Counts for Role Pipeline filter buttons ---
   const favoritedCount = useMemo(() => candidates.filter(c => c.favorite).length, [candidates]);
   const contactedCount = useMemo(() => candidates.filter(c => c.contacted).length, [candidates]);
 
-  // Filtered candidates for Role Pipeline
   const filteredCandidates = useMemo(() => {
     let tempCandidates = [...candidates];
-
-    // Status filter
     if (activeStatusFilter === 'favorite') {
       tempCandidates = tempCandidates.filter(c => c.favorite);
     } else if (activeStatusFilter === 'contacted') {
       tempCandidates = tempCandidates.filter(c => c.contacted);
     }
-
-    // Stage filter
     if (activeStageFilter !== 'all') {
       tempCandidates = tempCandidates.filter(c => c.stage === activeStageFilter);
     }
-
     return tempCandidates;
   }, [candidates, activeStatusFilter, activeStageFilter]);
 
@@ -334,10 +313,37 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }`;
   };
 
-  // --- All Candidates: fetch when tab/filters/page changes ---
+  // --- DOWNLOAD HANDLERS ---
+  const handleDownloadJdPipeline = async () => {
+    if (!selectedJdId) return;
+    try {
+      await downloadJdPipeline(selectedJdId, {
+        stage: activeStageFilter,
+        favorite: activeStatusFilter === 'favorite',
+        contacted: activeStatusFilter === 'contacted'
+      });
+    } catch (err) {
+      console.error("Download failed", err);
+      alert("Failed to download pipeline");
+    }
+  };
+
+  const handleDownloadAllCandidates = async () => {
+    try {
+      await downloadAllCandidates({
+        favorite: allCandidatesFilters.favorite,
+        contacted: allCandidatesFilters.contacted,
+        save_for_future: allCandidatesFilters.save_for_future
+      });
+    } catch (err) {
+      console.error("Download failed", err);
+      alert("Failed to download candidates");
+    }
+  };
+  // -------------------------
+
   useEffect(() => {
     if (activeTab !== 'allCandidates') return;
-
     const loadAllCandidates = async () => {
       setIsAllCandidatesLoading(true);
       try {
@@ -359,9 +365,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
         setIsAllCandidatesLoading(false);
       }
     };
-
     loadAllCandidates();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, allCandidatesPage, allCandidatesFilters]);
 
   const handleAllFilterChange = (filterKey: keyof typeof allCandidatesFilters, value: boolean | undefined) => {
@@ -392,12 +396,12 @@ export const PipelinePage = ({ user }: { user: User }) => {
 
           {activeTab === 'rolePipeline' ? (
             <>
-              <div className="mb-6">
+              <div className="mb-6 flex justify-between items-center gap-4">
                 <select
                   value={selectedJdId}
                   onChange={handleJdSelectionChange}
                   disabled={isLoading || userJds.length === 0}
-                  className="w-full p-2.5 border border-slate-200 rounded-md text-sm text-slate-600 focus:ring-teal-500 focus:border-teal-500 appearance-none bg-white"
+                  className="w-full max-w-xl p-2.5 border border-slate-200 rounded-md text-sm text-slate-600 focus:ring-teal-500 focus:border-teal-500 appearance-none bg-white"
                 >
                   <option value="">{userJds.length > 0 ? 'Select role to view pipeline' : 'No roles found'}</option>
                   {userJds.map(jd => (
@@ -406,6 +410,17 @@ export const PipelinePage = ({ user }: { user: User }) => {
                     </option>
                   ))}
                 </select>
+                
+                {/* --- Role Pipeline Download Button --- */}
+                <button 
+                  onClick={handleDownloadJdPipeline}
+                  disabled={!selectedJdId}
+                  className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+                  title="Download current filtered list as CSV"
+                >
+                  <Download size={16} />
+                  <span>Download CSV</span>
+                </button>
               </div>
 
               <div className="relative mb-4">
@@ -420,25 +435,19 @@ export const PipelinePage = ({ user }: { user: User }) => {
               <div className="flex items-center gap-2 border-b border-slate-200 pb-3 mb-3 text-sm">
                 <button
                   className={getFilterButtonClass(activeStatusFilter === 'all')}
-                  onClick={() => {
-                    setActiveStatusFilter('all');
-                  }}
+                  onClick={() => { setActiveStatusFilter('all'); }}
                 >
                   All
                 </button>
                 <button
                   className={getFilterButtonClass(activeStatusFilter === 'favorite')}
-                  onClick={() => {
-                    setActiveStatusFilter('favorite');
-                  }}
+                  onClick={() => { setActiveStatusFilter('favorite'); }}
                 >
                   Favourited ({favoritedCount})
                 </button>
                 <button
                   className={getFilterButtonClass(activeStatusFilter === 'contacted')}
-                  onClick={() => {
-                    setActiveStatusFilter('contacted');
-                  }}
+                  onClick={() => { setActiveStatusFilter('contacted'); }}
                 >
                   Contacted ({contactedCount})
                 </button>
@@ -513,14 +522,26 @@ export const PipelinePage = ({ user }: { user: User }) => {
             </>
           ) : (
             <>
-              <div className="relative mb-4">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                <input
-                  type="text"
-                  placeholder="Search candidates"
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 text-slate-900 placeholder:text-slate-500"
-                />
+              <div className="mb-4 flex justify-between items-center gap-4">
+                 <div className="relative flex-grow">
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="text"
+                    placeholder="Search candidates"
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 text-slate-900 placeholder:text-slate-500"
+                  />
+                </div>
+                {/* --- All Candidates Download Button --- */}
+                <button 
+                  onClick={handleDownloadAllCandidates}
+                  className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-sm font-medium transition-colors"
+                  title="Download all candidates matching filters as CSV"
+                >
+                  <Download size={16} />
+                  <span>Download CSV</span>
+                </button>
               </div>
+
               <div className="flex items-center gap-2 border-b border-slate-200 pb-3 mb-3 text-sm">
                 <button
                   className="px-3 py-1.5 rounded-md bg-slate-100 font-semibold text-slate-800"

@@ -30,17 +30,17 @@ export const getRankedCandidatesForJd = async (jd_id: string): Promise<Candidate
 
 /**
  * Fetches ALL ranked candidates (both JD and resume-sourced) for the current user.
- * Supports pagination and filters for favorite, contacted, and save_for_future.
+ * Supports pagination and filters for favorite, contacted, save_for_future, and recommended.
  *
  * @param page - Page number (1-indexed)
  * @param limit - Number of candidates per page
- * @param filters - Optional filters: { favorite?: boolean, contacted?: boolean, save_for_future?: boolean }
+ * @param filters - Optional filters: { favorite?: boolean, contacted?: boolean, save_for_future?: boolean, recommended?: boolean }
  * @returns { items, page, limit, total, has_more }
  */
 export const getAllRankedCandidates = async (
   page: number = 1,
   limit: number = 20,
-  filters: { favorite?: boolean; contacted?: boolean; save_for_future?: boolean } = {}
+  filters: { favorite?: boolean; contacted?: boolean; save_for_future?: boolean; recommended?: boolean } = {}
 ): Promise<{
   items: Candidate[];
   page: number;
@@ -61,6 +61,10 @@ export const getAllRankedCandidates = async (
   }
   if (filters.save_for_future !== undefined) {
     params.append('save_for_future', String(filters.save_for_future));
+  }
+  // ✅ NEW: Handle recommended filter
+  if (filters.recommended !== undefined) {
+    params.append('recommended', String(filters.recommended));
   }
 
   const res = await fetch(`/api/pipeline/all/?${params.toString()}`, {
@@ -128,4 +132,95 @@ export const updateCandidateFavoriteStatus = async (candidateId: string, favorit
     if (err instanceof Error) throw err;
     throw new Error('Failed to toggle favorite');
   }
+};
+
+/**
+ * Recommends a candidate to a specific Job Description (Role).
+ * This creates a new entry in the backend for the target JD.
+ *
+ * @param candidateId - The ID of the candidate to recommend
+ * @param source - The source of the candidate ('ranked_candidates', etc.)
+ * @param targetJdId - The ID of the JD to recommend them to
+ */
+export const recommendCandidate = async (
+  candidateId: string,
+  source: string,
+  targetJdId: string
+): Promise<void> => {
+  const res = await fetch(`/api/pipeline/recommend`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      candidate_id: candidateId,
+      source: source,
+      target_jd_id: targetJdId,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to recommend candidate (${res.status})`);
+  }
+};
+
+/**
+ * Triggers a CSV download for the specific JD pipeline, respecting filters.
+ */
+export const downloadJdPipeline = async (
+  jd_id: string,
+  filters: { stage?: string; favorite?: boolean; contacted?: boolean } = {}
+): Promise<void> => {
+  if (!jd_id) return;
+
+  const params = new URLSearchParams();
+  if (filters.stage && filters.stage !== 'all') params.append('stage', filters.stage);
+  if (filters.favorite) params.append('favorite', 'true');
+  if (filters.contacted) params.append('contacted', 'true');
+
+  const res = await fetch(`/api/pipeline/${encodeURIComponent(jd_id)}/download?${params.toString()}`, {
+    credentials: 'include',
+  });
+
+  if (!res.ok) throw new Error('Failed to download pipeline');
+
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `pipeline_jd_${jd_id}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+/**
+ * Triggers a CSV download for ALL candidates, respecting filters.
+ */
+export const downloadAllCandidates = async (
+  filters: { favorite?: boolean; contacted?: boolean; save_for_future?: boolean } = {}
+): Promise<void> => {
+  const params = new URLSearchParams();
+  if (filters.favorite) params.append('favorite', 'true');
+  if (filters.contacted) params.append('contacted', 'true');
+  if (filters.save_for_future) params.append('save_for_future', 'true');
+
+  const res = await fetch(`/api/pipeline/all/download?${params.toString()}`, {
+    credentials: 'include',
+  });
+
+  if (!res.ok) throw new Error('Failed to download candidates');
+
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `all_candidates.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
 };

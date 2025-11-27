@@ -2,12 +2,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Role, RoleStatus } from '../types/role';
 import { getRoles, updateRoleStatus, deleteRole } from '../api/roles';
-import { uploadBulkJds } from '../api/upload'; // ✅ Updated import
+import { uploadBulkJds } from '../api/upload'; 
 import RoleList from '../components/roles/RoleList';
 import RoleDetails from '../components/roles/RoleDetails';
 import { Header } from '../components/layout/Header';
 import { useAuth } from '../hooks/useAuth';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Loader2 } from 'lucide-react'; // Added for the processing icon
 
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>([]);
@@ -17,14 +18,15 @@ export default function RolesPage() {
   
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   
-  // ✅ CHANGED: Handle multiple files instead of single file
   const [jdFiles, setJdFiles] = useState<FileList | null>(null);
   
   const [uploading, setUploading] = useState<boolean>(false);
+  // ✅ NEW: State to track post-upload processing/parsing
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [statusUpdateError, setStatusUpdateError] = useState<string | null>(null);
   
-  // Sorting and Filtering State (Preserved from your code)
   const [sort, setSort] = useState<string>('created_at');
   const [sortOrder, setSortOrder] = useState<string>('desc'); 
   const [filter, setFilter] = useState<string>('all');
@@ -43,7 +45,6 @@ export default function RolesPage() {
 
   const [openEditorForRoleId, setOpenEditorForRoleId] = useState<string | null>(null);
 
-  // ✅ Limit for bulk uploads
   const MAX_FILES_LIMIT = 3;
 
   const handleUpdateRoleContent = useCallback((updatedRole: Role) => {
@@ -56,7 +57,8 @@ export default function RolesPage() {
   useEffect(() => {
     if (user) {
       const fetchUserRoles = async () => {
-        setIsLoading(true);
+        // Only show full page loading on initial mount, not during background updates
+        if (roles.length === 0) setIsLoading(true);
         setError(null);
         try {
           const userRoles = await getRoles(sort, filter, sortOrder);
@@ -75,10 +77,10 @@ export default function RolesPage() {
             }
           }
 
-          if (userRoles.length > 0) {
-            const currentSelected = selectedRole ? userRoles.find(r => r.id === selectedRole.id) : null;
-            setSelectedRole(currentSelected || userRoles[0]);
-          } else {
+          // Only default select if we don't have one and we aren't processing a new upload
+          if (!selectedRole && userRoles.length > 0 && !isProcessing) {
+            setSelectedRole(userRoles[0]);
+          } else if (userRoles.length === 0) {
             setSelectedRole(null);
           }
         } catch (err) {
@@ -92,7 +94,8 @@ export default function RolesPage() {
     } else if (!isAuthLoading) {
       setIsLoading(false);
     }
-  }, [user, isAuthLoading, sort, filter, sortOrder, location, navigate]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, isAuthLoading, sort, filter, sortOrder, location, navigate]); // removed roles dependency to avoid loops
 
   useEffect(() => {
     if (openEditorForRoleId && selectedRole?.id === openEditorForRoleId) {
@@ -105,12 +108,11 @@ export default function RolesPage() {
     setStatusUpdateError(null);
   };
 
-  // ✅ UPDATED: Handle multiple file selection with limit check
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files.length > 0) {
       if (event.target.files.length > MAX_FILES_LIMIT) {
         setUploadError(`To ensure system stability, please upload a maximum of ${MAX_FILES_LIMIT} files at a time.`);
-        event.target.value = ''; // Clear input
+        event.target.value = '';
         setJdFiles(null);
         return;
       }
@@ -119,7 +121,7 @@ export default function RolesPage() {
     }
   };
 
-  // ✅ UPDATED: Handle bulk upload and polling
+  // ✅ UPDATED: Handle bulk upload with processing state and auto-selection
   const handleBulkUpload = async () => {
     if (!jdFiles || jdFiles.length === 0) {
       setUploadError('Please select files to upload.');
@@ -132,34 +134,58 @@ export default function RolesPage() {
 
     setUploading(true);
     setUploadError(null);
+    
+    // Capture current IDs to detect new ones later
+    const existingRoleIds = new Set(roles.map(r => r.id));
+
     try {
-      // Call the new bulk API
       await uploadBulkJds(jdFiles);
       
-      // Close modal immediately for better UX
       setIsModalOpen(false);
       setJdFiles(null);
+      
+      // Start processing indication
+      setIsProcessing(true);
 
-      // Start polling for updates since processing is async
       let attempts = 0;
+      const maxAttempts = 10; // Poll for 50 seconds max
+      
       const intervalId = setInterval(async () => {
         attempts++;
         try {
+          // Re-fetch roles
           const updatedRoles = await getRoles(sort, filter, sortOrder);
-          setRoles(updatedRoles);
           
-          // If we find new roles that weren't there before, we could select one, 
-          // but simple refreshing is safer for bulk operations.
+          // Check for ANY new role ID that wasn't in our previous list
+          const newRoles = updatedRoles.filter(r => !existingRoleIds.has(r.id));
+          
+          if (newRoles.length > 0) {
+            // Found new roles!
+            setRoles(updatedRoles);
+            
+            // Select the first new role found (usually the one just processed)
+            setSelectedRole(newRoles[0]);
+            
+            // Stop processing indication
+            setIsProcessing(false);
+            clearInterval(intervalId);
+          } else {
+            // Just update the list in case of status changes, but don't stop polling yet
+            setRoles(updatedRoles);
+          }
         } catch (e) {
           console.error("Polling error", e);
         }
         
-        // Stop polling after ~30 seconds (6 attempts * 5s)
-        if (attempts > 6) clearInterval(intervalId); 
+        if (attempts >= maxAttempts) {
+          setIsProcessing(false);
+          clearInterval(intervalId);
+        }
       }, 5000);
 
     } catch (err: any) {
       setUploadError(err.message || 'An unexpected error occurred.');
+      setIsProcessing(false); // Stop processing on error
       console.error(err);
     } finally {
       setUploading(false);
@@ -250,11 +276,19 @@ export default function RolesPage() {
             />
           </div>
 
-          <div className="md:col-span-2 lg:col-span-3 h-full bg-white p-6 rounded-lg shadow-sm overflow-auto">
+          <div className="md:col-span-2 lg:col-span-3 h-full bg-white p-6 rounded-lg shadow-sm overflow-auto flex flex-col">
+            {/* ✅ NEW: Processing Banner */}
+            {isProcessing && (
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 text-blue-700 rounded-md flex items-center gap-2 animate-pulse">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm font-medium">Processing uploaded JDs... Your new role will appear shortly.</span>
+              </div>
+            )}
+
             {isLoading ? (
-              <div className="text-center text-slate-500">Loading roles...</div>
+              <div className="text-center text-slate-500 mt-10">Loading roles...</div>
             ) : error ? (
-              <div className="text-red-500 text-center">{error}</div>
+              <div className="text-red-500 text-center mt-10">{error}</div>
             ) : selectedRole ? (
               <>
                 {statusUpdateError && (
@@ -271,7 +305,9 @@ export default function RolesPage() {
                 />
               </>
             ) : (
-              <div className="text-center text-slate-500">{user ? 'No roles found. Select "New Role" to begin.' : 'Please log in to view roles.'}</div>
+              <div className="flex flex-col items-center justify-center h-full text-slate-500">
+                <p className="text-lg">{user ? 'No roles found. Select "New Role" to begin.' : 'Please log in to view roles.'}</p>
+              </div>
             )}
           </div>
         </div>
@@ -282,7 +318,6 @@ export default function RolesPage() {
           <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
             <h2 className="text-2xl font-bold mb-4">Create New Role</h2>
             <p className="mb-4 text-gray-600">Upload Job Descriptions (Max {MAX_FILES_LIMIT}).</p>
-            {/* ✅ UPDATED: Input accepts multiple files */}
             <input
               type="file"
               multiple
@@ -293,8 +328,8 @@ export default function RolesPage() {
             {uploadError && <p className="text-red-500 text-sm mb-4">{uploadError}</p>}
             <div className="flex justify-end space-x-4">
               <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 bg-gray-300 rounded-md" disabled={uploading}>Cancel</button>
-              {/* ✅ UPDATED: Button text and handler */}
-              <button onClick={handleBulkUpload} className="px-4 py-2 bg-teal-600 text-white rounded-md disabled:bg-teal-600" disabled={uploading || !jdFiles}>
+              <button onClick={handleBulkUpload} className="px-4 py-2 bg-teal-600 text-white rounded-md disabled:bg-teal-600 flex items-center gap-2" disabled={uploading || !jdFiles}>
+                {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
                 {uploading ? 'Queuing...' : `Upload ${jdFiles?.length || ''} File(s)`}
               </button>
             </div>

@@ -1,3 +1,4 @@
+// Frontend/src/pages/SearchPage.tsx
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Header } from '../components/layout/Header';
 import { CandidateRow } from '../components/ui/CandidateRow';
@@ -12,7 +13,6 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { User } from '../types/user';
-// ✅ UPDATED: Import uploadBulkJds
 import { uploadJdFile, uploadResumeFiles, uploadBulkJds } from '../api/upload';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
 import CandidatePopupCard from '../components/ui/CandidatePopupCard';
@@ -25,17 +25,20 @@ import {
   getRankResumesResults,
   stopTask,
   toggleFavorite,
-  toggleSave, // ✅ NEW import
+  toggleSave,
   startApolloSearchTask,
   triggerCombinedSearch,
   getCombinedSearchResults,
   startGoogleLinkedinTask,
   getGoogleLinkedinResults,
-  fetchLinkedInCandidates, // NEW
+  fetchLinkedInCandidates,
 } from '../api/search';
 
+// ✅ NEW: Import to sync data from pipeline
+import { getRankedCandidatesForJd } from '../api/pipeline';
+
 import type { Candidate, LinkedInCandidate } from '../types/candidate';
-import { LinkedInCandidateRow } from '../components/ui/LinkedInCandidateRow'; // NEW
+import { LinkedInCandidateRow } from '../components/ui/LinkedInCandidateRow';
 
 // stable key for react lists
 const stableKey = (c: Candidate) => {
@@ -89,7 +92,7 @@ export function SearchPage({ user }: { user: User }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
 
-  // NEW: LinkedIn candidates state
+  // LinkedIn candidates state
   const [linkedInCandidates, setLinkedInCandidates] = useState<LinkedInCandidate[]>([]);
 
   // 'db' | 'web' | 'gl' (LinkedIn)
@@ -115,7 +118,7 @@ export function SearchPage({ user }: { user: User }) {
 
   const isRestoringRef = useRef<boolean>(true);
 
-  // ✅ Limit for uploads
+  // Limit for uploads
   const MAX_FILES_LIMIT = 3;
 
   const STORAGE_KEY = useMemo(() => {
@@ -128,7 +131,19 @@ export function SearchPage({ user }: { user: User }) {
   const COMBINED_OVERALL_TIMEOUT_MS = 15 * 60 * 1000;
   const taskStartedAtRef = useRef<number | null>(null);
 
-  // persist ranked candidates (not LinkedIn list) to session
+  // Warning on Refresh (Page Unload)
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isRankingLoading || (candidates.length > 0 && !isRestoringRef.current)) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isRankingLoading, candidates.length]);
+
+  // Persist candidates to session
   useEffect(() => {
     if (isRestoringRef.current) return;
     try {
@@ -142,7 +157,7 @@ export function SearchPage({ user }: { user: User }) {
     }
   }, [candidates, currentJd, STORAGE_KEY]);
 
-  // load JDs and restore possibly persisted candidates
+  // Load JDs and restore persistence
   useEffect(() => {
     let parsedStorage: PersistedCandidates | null = null;
     isRestoringRef.current = true;
@@ -190,12 +205,56 @@ export function SearchPage({ user }: { user: User }) {
     })();
   }, [STORAGE_KEY]);
 
-  // ✅ UPDATED: Handle Single (Sync) or Bulk (Async) Uploads
+  // Sync Hook - Refetch candidate status when window focuses or JD changes
+  useEffect(() => {
+    const syncCandidates = async () => {
+      if (!currentJd?.jd_id) return;
+      
+      try {
+        const freshData = await getRankedCandidatesForJd(currentJd.jd_id);
+        
+        if (!freshData || freshData.length === 0) return;
+
+        setCandidates(prev => {
+          let hasChanges = false;
+          const next = prev.map(c => {
+            const fresh = freshData.find(f => 
+              (c.rank_id && f.rank_id === c.rank_id) || 
+              (c.profile_id && f.profile_id === c.profile_id)
+            );
+
+            if (fresh) {
+              if (fresh.favorite !== c.favorite || fresh.save_for_future !== c.save_for_future) {
+                hasChanges = true;
+                return { 
+                  ...c, 
+                  favorite: fresh.favorite, 
+                  save_for_future: fresh.save_for_future 
+                };
+              }
+            }
+            return c;
+          });
+          return hasChanges ? next : prev;
+        });
+      } catch (err) {
+        console.warn("Background sync failed", err);
+      }
+    };
+
+    syncCandidates();
+
+    const onFocus = () => syncCandidates();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [currentJd?.jd_id]);
+
+
+  // Auto-select uploaded JD (Single & Bulk)
   const handleJdFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files && files.length > 0) {
       
-      // 1. Check limit
       if (files.length > MAX_FILES_LIMIT) {
         setUploadStatus({ message: `To ensure fast processing, please upload a maximum of ${MAX_FILES_LIMIT} files at a time.`, type: 'error' });
         if (jdInputRef.current) jdInputRef.current.value = ''; // reset input
@@ -206,7 +265,6 @@ export function SearchPage({ user }: { user: User }) {
       setUploadStatus(null);
 
       try {
-        // 2. Single File Strategy (Keep it Sync for better UX - auto-select)
         if (files.length === 1) {
             const file = files[0];
             const newJd = await uploadJdFile(file);
@@ -214,14 +272,13 @@ export function SearchPage({ user }: { user: User }) {
             setUserJds(updatedJds);
             handleJdSelection(newJd.jd_id, updatedJds);
             setUploadStatus({ message: 'JD uploaded and selected!', type: 'success' });
-            setIsJdLoading(false); // ✅ Stop loading immediately for single file
+            setIsJdLoading(false);
         } 
-        // 3. Bulk File Strategy (Async Queue)
         else {
+            const existingIds = new Set(userJds.map(j => j.jd_id));
+            
             await uploadBulkJds(files);
             setUploadStatus({ message: 'JDs queued. Processing in background...', type: 'success' });
-            
-            // ✅ KEY CHANGE: We keep isJdLoading(true) so the button stays disabled while parsing
             
             const startCount = userJds.length;
             const expectedCount = startCount + files.length;
@@ -231,21 +288,33 @@ export function SearchPage({ user }: { user: User }) {
                 attempts++;
                 try {
                     const updatedJds = await fetchJdsForUser();
-                    setUserJds(updatedJds);
                     
-                    // ✅ Check if processing is done (count increased by number of files)
-                    if (updatedJds.length >= expectedCount) {
-                        setUploadStatus({ message: 'All JDs parsed successfully!', type: 'success' });
-                        setIsJdLoading(false); // ✅ Re-enable button
+                    if (updatedJds.length > userJds.length) {
+                         setUserJds(updatedJds);
+                    }
+
+                    const newJds = updatedJds.filter(j => !existingIds.has(j.jd_id));
+
+                    const isDone = updatedJds.length >= expectedCount;
+                    const isTimeout = attempts > 24; // ~2 minutes
+
+                    if (isDone || (isTimeout && newJds.length > 0)) {
+                        setUploadStatus({ 
+                          message: isDone ? 'All JDs parsed successfully!' : 'Bulk processing finished (check dropdown).', 
+                          type: 'success' 
+                        });
+                        setIsJdLoading(false);
                         clearInterval(intervalId);
                         
-                        // If user had no roles before, auto-select the first one
-                        if (startCount === 0 && updatedJds.length > 0) {
-                             handleJdSelection(updatedJds[0].jd_id, updatedJds);
+                        if (newJds.length > 0) {
+                            handleJdSelection(newJds[0].jd_id, updatedJds);
+                        } else if (updatedJds.length > 0) {
+                            handleJdSelection(updatedJds[0].jd_id, updatedJds);
                         }
-                    } else if (attempts > 24) { // Timeout after ~2 minutes
-                         setUploadStatus({ message: 'Bulk processing completed (check dropdown).', type: 'success' });
-                         setIsJdLoading(false); // ✅ Re-enable button
+
+                    } else if (isTimeout) {
+                         setUploadStatus({ message: 'Processing timed out. Please check the dropdown manually.', type: 'error' });
+                         setIsJdLoading(false);
                          clearInterval(intervalId);
                     }
                 } catch (e) { 
@@ -256,9 +325,9 @@ export function SearchPage({ user }: { user: User }) {
 
       } catch (error) {
         setUploadStatus({ message: (error as Error).message, type: 'error' });
-        setIsJdLoading(false); // Stop loading on error
+        setIsJdLoading(false);
       } finally {
-        if (jdInputRef.current) jdInputRef.current.value = ''; // reset input
+        if (jdInputRef.current) jdInputRef.current.value = '';
       }
     }
   };
@@ -280,7 +349,6 @@ export function SearchPage({ user }: { user: User }) {
         return;
       }
 
-      // restore ranked candidates for this JD if present; clear otherwise
       let restored = false;
       try {
         const raw = sessionStorage.getItem(STORAGE_KEY);
@@ -296,7 +364,7 @@ export function SearchPage({ user }: { user: User }) {
       }
       if (!restored) {
         setCandidates([]);
-        setLinkedInCandidates([]); // clear LinkedIn list on JD change
+        setLinkedInCandidates([]);
       }
 
       setUploadStatus(null);
@@ -324,7 +392,6 @@ export function SearchPage({ user }: { user: User }) {
       return;
     }
 
-    // Clear old persisted ranked results
     try {
       sessionStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -339,7 +406,6 @@ export function SearchPage({ user }: { user: User }) {
     const search_start_time = new Date().toISOString();
 
     try {
-      // LinkedIn sourcing branch: start task and remember timestamp
       if (sourcingOption === 'gl') {
         linkedInSinceRef.current = search_start_time;
         const res = await startGoogleLinkedinTask(currentJd.jd_id, chatMessage || '');
@@ -351,52 +417,30 @@ export function SearchPage({ user }: { user: User }) {
         return;
       }
 
-      // Existing flows (db / web)
-      if (resumeFiles && resumeFiles.length > 1) {
-        await uploadResumeFiles(resumeFiles, currentJd.jd_id);
-        setResumeFiles(null);
-        if (resumeInputRef.current) resumeInputRef.current.value = '';
-        setUploadStatus({ message: 'Resumes uploaded. Starting ranking...', type: 'success' });
-
-        if (sourcingOption === 'db') {
-          const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
-          const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
-          if (!newTaskId) throw new Error('Failed to start ranking task.');
-          setTaskId(newTaskId);
-          taskStartedAtRef.current = Date.now();
-          setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
-        } else {
-          const res = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
-          const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
-          if (!newTaskId) throw new Error('Failed to start search task.');
-          combinedApolloTaskIdRef.current = newTaskId;
-          combinedSinceRef.current = search_start_time;
-          taskStartedAtRef.current = Date.now();
-          setIsCombinedSearch(true);
-          setUploadStatus({ message: 'Search task started. Checking for results...', type: 'success' });
-        }
-        setIsRankingLoading(false);
-        return;
-      }
-
-      if (sourcingOption === 'web' && resumeFiles && resumeFiles.length === 1) {
-        const file = resumeFiles[0];
-        const res = await triggerCombinedSearch(currentJd.jd_id, chatMessage || '', webSearchOption, file);
-        const apolloTaskId =
-          (res as any)?.apollo_task_id ?? (res as any)?.apolloTaskId ?? (res as any)?.task_id ?? null;
+      if (sourcingOption === 'web') {
+        const res = await triggerCombinedSearch(
+          currentJd.jd_id, 
+          chatMessage || '', 
+          webSearchOption, 
+          resumeFiles
+        );
+        
+        const apolloTaskId = (res as any)?.apollo_task_id ?? (res as any)?.apolloTaskId ?? (res as any)?.task_id ?? null;
 
         if (!apolloTaskId) {
-          const fallback = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
-          combinedApolloTaskIdRef.current = fallback.task_id;
+           const fallback = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
+           combinedApolloTaskIdRef.current = fallback.task_id;
         } else {
-          combinedApolloTaskIdRef.current = apolloTaskId;
+           combinedApolloTaskIdRef.current = apolloTaskId;
         }
 
         combinedSinceRef.current = search_start_time;
         taskStartedAtRef.current = Date.now();
         setIsCombinedSearch(true);
+        
         setResumeFiles(null);
         if (resumeInputRef.current) resumeInputRef.current.value = '';
+        
         setUploadStatus({
           message: 'Combined search started. Polling for incremental & final results...',
           type: 'success',
@@ -404,7 +448,6 @@ export function SearchPage({ user }: { user: User }) {
         return;
       }
 
-      // default existing behavior:
       if (resumeFiles && resumeFiles.length > 0) {
         await uploadResumeFiles(resumeFiles, currentJd.jd_id);
         setResumeFiles(null);
@@ -412,21 +455,13 @@ export function SearchPage({ user }: { user: User }) {
         setUploadStatus({ message: 'Resumes uploaded. Starting ranking...', type: 'success' });
       }
 
-      if (sourcingOption === 'db') {
-        const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
-        const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
-        if (!newTaskId) throw new Error('Failed to start ranking task.');
-        setTaskId(newTaskId);
-        taskStartedAtRef.current = Date.now();
-        setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
-      } else {
-        const res = await startApolloSearchTask(currentJd.jd_id, chatMessage || '', webSearchOption);
-        const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
-        if (!newTaskId) throw new Error('Failed to start search task.');
-        setTaskId(newTaskId);
-        taskStartedAtRef.current = Date.now();
-        setUploadStatus({ message: 'Search task started. Checking for results...', type: 'success' });
-      }
+      const res = await startRankResumesTask(currentJd.jd_id, chatMessage || '');
+      const newTaskId = (res as any)?.task_id ?? (res as any)?.taskId ?? (res as any)?.id ?? null;
+      if (!newTaskId) throw new Error('Failed to start ranking task.');
+      setTaskId(newTaskId);
+      taskStartedAtRef.current = Date.now();
+      setUploadStatus({ message: 'Ranking task started. Checking for results...', type: 'success' });
+
     } catch (error) {
       if ((error as Error).message !== 'Search cancelled by user.') {
         setUploadStatus({ message: (error as Error).message, type: 'error' });
@@ -435,7 +470,6 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // polling for tasks
   useEffect(() => {
     if (isCombinedSearch) {
       const apolloTaskId = combinedApolloTaskIdRef.current;
@@ -673,11 +707,41 @@ export function SearchPage({ user }: { user: User }) {
   };
 
   const handleUpdateCandidate = (updated: Candidate) => {
-    setCandidates((prev) => prev.map((c) => (c.profile_id === updated.profile_id ? updated : c)));
+    setCandidates((prev) => prev.map((c) => {
+        const idMatch = c.profile_id === updated.profile_id || 
+                        (c.rank_id && c.rank_id === updated.rank_id) || 
+                        (c.resume_id && c.resume_id === updated.resume_id);
+        return idMatch ? updated : c;
+    }));
+    
+    if (selectedCandidate) {
+        const isSelected = selectedCandidate.profile_id === updated.profile_id || 
+                           (selectedCandidate.rank_id && selectedCandidate.rank_id === updated.rank_id) ||
+                           (selectedCandidate.resume_id && selectedCandidate.resume_id === updated.resume_id);
+        if (isSelected) {
+             setSelectedCandidate(updated);
+        }
+    }
   };
 
   const handleCandidateNameClick = (candidate: Candidate) => setSelectedCandidate(candidate);
   const handleCloseCandidatePopup = () => setSelectedCandidate(null);
+
+  const handlePrevCandidate = () => {
+    if (!selectedCandidate || candidates.length === 0) return;
+    const currentIndex = candidates.findIndex(c => stableKey(c) === stableKey(selectedCandidate));
+    if (currentIndex > 0) {
+      setSelectedCandidate(candidates[currentIndex - 1]);
+    }
+  };
+
+  const handleNextCandidate = () => {
+    if (!selectedCandidate || candidates.length === 0) return;
+    const currentIndex = candidates.findIndex(c => stableKey(c) === stableKey(selectedCandidate));
+    if (currentIndex !== -1 && currentIndex < candidates.length - 1) {
+      setSelectedCandidate(candidates[currentIndex + 1]);
+    }
+  };
 
   const getMainActionButton = () => {
     if (isRankingLoading) {
@@ -694,7 +758,6 @@ export function SearchPage({ user }: { user: User }) {
     if (sourcingOption === 'db') buttonText = 'Rank';
     if (sourcingOption === 'gl') buttonText = 'Start Sourcing';
     
-    // ✅ UPDATED: Disable button if JD is loading (including bulk upload)
     return (
       <button
         onClick={handleSearchAndRank}
@@ -728,53 +791,64 @@ export function SearchPage({ user }: { user: User }) {
     source: 'ranked_candidates' | 'ranked_candidates_from_resume' = 'ranked_candidates',
     newFavorite: boolean
   ) => {
-    setCandidates((prev) =>
-      prev.map((c) => {
-        if (c.profile_id === candidateId || (c as any).resume_id === candidateId) {
+    const updateList = (list: Candidate[]) => list.map((c) => {
+        const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
+        if (isMatch) {
           return { ...c, favorite: newFavorite };
         }
         return c;
-      })
-    );
+    });
+
+    setCandidates(prev => updateList(prev));
+
+    if (selectedCandidate) {
+      const isMatch = selectedCandidate.profile_id === candidateId || (selectedCandidate as any).resume_id === candidateId || selectedCandidate.rank_id === candidateId;
+      if (isMatch) {
+          setSelectedCandidate(prev => prev ? ({ ...prev, favorite: newFavorite }) : null);
+      }
+    }
 
     try {
       await toggleFavorite(candidateId, source, newFavorite);
     } catch {
-      setCandidates((prev) =>
-        prev.map((c) => {
-          if (c.profile_id === candidateId || (c as any).resume_id === candidateId) {
-            return { ...c, favorite: !newFavorite };
-          }
+      setCandidates((prev) => prev.map((c) => {
+          const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
+          if (isMatch) return { ...c, favorite: !newFavorite };
           return c;
-        })
-      );
+      }));
+       if (selectedCandidate) {
+           const isMatch = selectedCandidate.profile_id === candidateId || (selectedCandidate as any).resume_id === candidateId || selectedCandidate.rank_id === candidateId;
+           if (isMatch) setSelectedCandidate(prev => prev ? ({ ...prev, favorite: !newFavorite }) : null);
+       }
       setUploadStatus({ message: 'Failed to update favorite. Try again.', type: 'error' });
     }
   };
 
-  // ------------------------------
-  // ✅ NEW: Save-for-Future handler
-  // ------------------------------
   const handleToggleSave = async (
     candidateId: string,
     source: 'ranked_candidates' | 'ranked_candidates_from_resume' = 'ranked_candidates',
     newSave: boolean
   ) => {
-    // snapshot for revert
     const prevCandidates = candidates;
     const prevLinked = linkedInCandidates;
 
-    // optimistic update: ranked candidates
     setCandidates((prev) =>
       prev.map((c) => {
-        if (c.profile_id === candidateId || (c as any).resume_id === candidateId) {
+        const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
+        if (isMatch) {
           return { ...c, save_for_future: newSave };
         }
         return c;
       })
     );
 
-    // optimistic update: linkedIn candidates (match by linkedin_profile_id or profile_link)
+    if (selectedCandidate) {
+        const isMatch = selectedCandidate.profile_id === candidateId || (selectedCandidate as any).resume_id === candidateId || selectedCandidate.rank_id === candidateId;
+        if (isMatch) {
+            setSelectedCandidate(prev => prev ? ({ ...prev, save_for_future: newSave }) : null);
+        }
+    }
+
     setLinkedInCandidates((prev) =>
       prev.map((li) => {
         if ((li as any).linkedin_profile_id === candidateId || (li as any).profile_link === candidateId) {
@@ -787,9 +861,12 @@ export function SearchPage({ user }: { user: User }) {
     try {
       await toggleSave(candidateId, source, newSave);
     } catch {
-      // revert both lists
       setCandidates(prevCandidates);
       setLinkedInCandidates(prevLinked);
+      if (selectedCandidate) {
+         const isMatch = selectedCandidate.profile_id === candidateId || (selectedCandidate as any).resume_id === candidateId || selectedCandidate.rank_id === candidateId;
+         if (isMatch) setSelectedCandidate(prev => prev ? ({ ...prev, save_for_future: !newSave }) : null);
+      }
       setUploadStatus({ message: 'Failed to update Save-for-Future. Try again.', type: 'error' });
     }
   };
@@ -810,7 +887,6 @@ export function SearchPage({ user }: { user: User }) {
                 >
                   <Plus size={14} /> Add New Role
                 </button>
-                {/* ✅ UPDATED: Allow multiple file selection */}
                 <input 
                   type="file" 
                   ref={jdInputRef} 
@@ -897,12 +973,31 @@ export function SearchPage({ user }: { user: User }) {
                   />{' '}
                   LinkedIn
                 </label>
-                <label className="flex items-center gap-2 text-gray-400">
-                  {/* <input type="radio" name="sourcing" value="both" disabled /> Both (Coming Soon) */}
-                </label>
               </div>
 
-              {/* Web Search modes only for 'web' option */}
+              {sourcingOption !== 'gl' && (
+                <>
+                  <button
+                    onClick={() => resumeInputRef.current?.click()}
+                    className="mt-4 w-full border-dashed border-2 border-gray-300 rounded-lg p-6 text-center hover:border-teal-500 hover:text-teal-500 transition-colors"
+                  >
+                    <UploadCloud size={24} className="mx-auto text-gray-400" />
+                    <p className="text-sm text-gray-500 mt-2">
+                      {resumeFiles ? `${resumeFiles.length} resumes selected` : 'Upload Resumes'}
+                    </p>
+                  </button>
+                  <input
+                    type="file"
+                    ref={resumeInputRef}
+                    onChange={handleResumeFilesChange}
+                    className="hidden"
+                    accept=".pdf,.docx,.txt"
+                    multiple
+                  />
+                </>
+              )}
+
+              {/* Web Search modes */}
               {sourcingOption === 'web' && (
                 <div className="mt-4 p-3 bg-gray-50 rounded-md border border-gray-100 text-sm">
                   <div className="font-medium mb-2">Web Sourcing Mode</div>
@@ -932,28 +1027,6 @@ export function SearchPage({ user }: { user: User }) {
                 </div>
               )}
 
-              {/* Resume upload — HIDDEN in LinkedIn mode */}
-              {sourcingOption !== 'gl' && (
-                <>
-                  <button
-                    onClick={() => resumeInputRef.current?.click()}
-                    className="mt-4 w-full border-dashed border-2 border-gray-300 rounded-lg p-6 text-center hover:border-teal-500 hover:text-teal-500 transition-colors"
-                  >
-                    <UploadCloud size={24} className="mx-auto text-gray-400" />
-                    <p className="text-sm text-gray-500 mt-2">
-                      {resumeFiles ? `${resumeFiles.length} resumes selected` : 'Upload Resumes'}
-                    </p>
-                  </button>
-                  <input
-                    type="file"
-                    ref={resumeInputRef}
-                    onChange={handleResumeFilesChange}
-                    className="hidden"
-                    accept=".pdf,.docx,.txt"
-                    multiple
-                  />
-                </>
-              )}
             </div>
 
             {getMainActionButton()}
@@ -1012,6 +1085,8 @@ export function SearchPage({ user }: { user: User }) {
                         onToggleSave={(candidateId: string, source?: any, save?: boolean) =>
                           handleToggleSave(candidateId, (source as any) ?? 'ranked_candidates', save ?? !li.save_for_future)
                         }
+                        // ✅ NEW: Pass user JDs
+                        userJds={userJds}
                       />
                     ))
                   : candidates.map((candidate) => (
@@ -1035,6 +1110,8 @@ export function SearchPage({ user }: { user: User }) {
                           )
                         }
                         source={(candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'}
+                        // ✅ NEW: Pass user JDs
+                        userJds={userJds}
                       />
                     ))}
               </div>
@@ -1055,7 +1132,6 @@ export function SearchPage({ user }: { user: User }) {
                 )}
               </div>
 
-              {/* Chat disabled in LinkedIn mode */}
               <div className="relative">
                 <input
                   type="text"
@@ -1101,7 +1177,29 @@ export function SearchPage({ user }: { user: User }) {
         </div>
       </main>
 
-      {selectedCandidate && <CandidatePopupCard candidate={selectedCandidate} onClose={handleCloseCandidatePopup} />}
+      {selectedCandidate && (
+        <CandidatePopupCard 
+          candidate={selectedCandidate} 
+          onClose={handleCloseCandidatePopup}
+          onUpdateCandidate={handleUpdateCandidate}
+          onPrev={handlePrevCandidate}
+          onNext={handleNextCandidate}
+          onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
+            handleToggleFavorite(
+              candidateId,
+              (source as any) ?? 'ranked_candidates',
+              fav ?? !selectedCandidate.favorite
+            )
+          }
+          onToggleSave={(candidateId: string, source?: any, save?: boolean) =>
+            handleToggleSave(
+              candidateId,
+              (source as any) ?? ((selectedCandidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'),
+              save ?? !((selectedCandidate as any).save_for_future)
+            )
+          }
+        />
+      )}
 
       {selectedJd && <JdPopupCard jd={selectedJd} onClose={handleCloseJdPopup} />}
     </div>

@@ -1,15 +1,23 @@
 import React, { useState } from "react";
 
+// ✅ UPDATED: Relaxed type to match JdSummary (allows null/undefined role)
+export interface JdOption {
+  jd_id: string;
+  role?: string | null;
+}
+
 interface RecommendPopupProps {
   isOpen: boolean;
   onClose: () => void;
   onSend: (type: "role" | "team", selection: string) => void;
+  jds?: JdOption[];
 }
 
 export default function RecommendPopup({
   isOpen,
   onClose,
   onSend,
+  jds = [],
 }: RecommendPopupProps) {
   const [activeTab, setActiveTab] = useState<"role" | "team">("role");
   const [selection, setSelection] = useState("");
@@ -58,7 +66,10 @@ export default function RecommendPopup({
           {/* Tab buttons */}
           <div className="mb-6 flex gap-4">
             <button
-              onClick={() => setActiveTab("role")}
+              onClick={() => { 
+                setActiveTab("role"); 
+                setSelection(""); 
+              }}
               className={`px-4 py-2 rounded-md text-sm font-medium border ${
                 activeTab === "role"
                   ? "bg-[#F8FEFE] border-[#CCE7E8] text-[#0B7285]"
@@ -68,7 +79,10 @@ export default function RecommendPopup({
               Recommend to Role
             </button>
             <button
-              onClick={() => setActiveTab("team")}
+              onClick={() => { 
+                setActiveTab("team"); 
+                setSelection(""); 
+              }}
               className={`px-4 py-2 rounded-md text-sm font-medium border ${
                 activeTab === "team"
                   ? "bg-[#F8FEFE] border-[#CCE7E8] text-[#0B7285]"
@@ -86,12 +100,28 @@ export default function RecommendPopup({
               onChange={(e) => setSelection(e.target.value)}
               className="w-full rounded-md border border-[#E6F0F0] bg-white px-4 py-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#D6EEF0]"
             >
-              <option value="">Select a Role/ teammate</option>
-              <option value="frontend">Frontend Developer</option>
-              <option value="backend">Backend Developer</option>
-              <option value="ml">ML Engineer</option>
-              <option value="teammate1">Teammate 1</option>
-              <option value="teammate2">Teammate 2</option>
+              <option value="">
+                {activeTab === "role" ? "Select a Role" : "Select a Teammate"}
+              </option>
+              
+              {/* DYNAMIC OPTIONS BASED ON TAB */}
+              {activeTab === "role" ? (
+                jds.length > 0 ? (
+                  jds.map((jd) => (
+                    <option key={jd.jd_id} value={jd.jd_id}>
+                      {jd.role || "Unnamed Role"}
+                    </option>
+                  ))
+                ) : (
+                  <option disabled>No roles available</option>
+                )
+              ) : (
+                <>
+                  {/* Hardcoded teammates for now */}
+                  <option value="teammate1">Teammate 1</option>
+                  <option value="teammate2">Teammate 2</option>
+                </>
+              )}
             </select>
           </div>
         </div>
@@ -105,7 +135,12 @@ export default function RecommendPopup({
                 onClose();
               }
             }}
-            className="inline-flex items-center justify-center rounded-md bg-[#007BFF] px-5 py-2 text-sm font-semibold text-white shadow-sm hover:brightness-95"
+            disabled={!selection}
+            className={`inline-flex items-center justify-center rounded-md px-5 py-2 text-sm font-semibold text-white shadow-sm ${
+                selection 
+                ? "bg-[#007BFF] hover:brightness-95" 
+                : "bg-gray-300 cursor-not-allowed"
+            }`}
           >
             Send
           </button>

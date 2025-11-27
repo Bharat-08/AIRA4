@@ -158,33 +158,36 @@ export const getRankResumesResults = async (taskId: string): Promise<TaskStatusR
 };
 
 
-// --- NEW: Combined Search (web + optional single resume) ---
+// --- NEW: Combined Search (web + optional multiple resumes) ---
 
 /**
  * Triggers the combined search endpoint which will:
  * - start the apollo/web search task
- * - optionally upload a single resume and start processing it
- * Returns the task ids (apollo_task_id, resume_task_id) for backend tasks.
+ * - optionally upload multiple resumes and start processing them
+ * Returns the task ids (apollo_task_id, resume_task_ids) for backend tasks.
  *
  * @param jdId string
  * @param prompt string | null
  * @param searchOption number (1 or 2)
- * @param file File | null  -> single resume file (if provided)
+ * @param files FileList | null  -> list of resume files (if provided)
  */
 export const triggerCombinedSearch = async (
   jdId: string,
   prompt: string | null,
   searchOption: number,
-  file: File | null
-): Promise<{ apollo_task_id: string; resume_task_id?: string | null } & { status: string }> => {
+  files: FileList | null
+): Promise<{ apollo_task_id: string; resume_task_ids?: string[] } & { status: string }> => {
   // build multipart/form-data
   const form = new FormData();
   form.append('jd_id', jdId);
   form.append('search_option', String(searchOption || 2));
   if (prompt) form.append('prompt', prompt);
-  if (file) {
-    // backend expects 'file' as the field name
-    form.append('file', file, file.name);
+  
+  // CHANGED: Append multiple files
+  if (files && files.length > 0) {
+    for (let i = 0; i < files.length; i++) {
+      form.append('files', files[i]);
+    }
   }
 
   const response = await fetch(`/api/search/combined-search`, {

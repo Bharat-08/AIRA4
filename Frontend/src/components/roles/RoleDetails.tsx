@@ -64,8 +64,14 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
     setIsEditing(false);
   };
   
+  // ✅ UPDATED: Pass state to PipelinePage to auto-select this role and tab
   const handleGoToPipeline = () => {
-    navigate(`/pipeline/${role.id}`);
+    navigate('/pipeline', { 
+      state: { 
+        defaultTab: 'rolePipeline',
+        selectedJdId: role.id 
+      } 
+    });
   };
 
   const handleGoToSearch = () => {
@@ -92,6 +98,9 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
 
   // Helper to check if search should be disabled
   const isSearchDisabled = role.status !== 'open';
+
+  // ✅ NEW: Check if pipeline should be disabled (0 liked and 0 contacted)
+  const isPipelineDisabled = role.candidateStats.liked === 0 && role.candidateStats.contacted === 0;
 
   return (
     <div className="flex flex-col h-full">
@@ -236,7 +245,7 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
         </p>
 
         <div className="flex gap-3">
-            {/* Go to Search Button: Disabled/Greyed out if status != 'open' */}
+            {/* Go to Search Button */}
             <button
               onClick={handleGoToSearch}
               disabled={isSearchDisabled}
@@ -250,9 +259,15 @@ const RoleDetails: React.FC<RoleDetailsProps> = ({ role, onUpdateStatus, onUpdat
               Go to Search
             </button>
 
+          {/* ✅ UPDATED: Go to Pipeline Button (Disabled if liked & contacted are 0) */}
           <button
             onClick={handleGoToPipeline}
-            className="px-4 py-2 border border-slate-300 text-sm font-medium rounded-md shadow-sm text-slate-700 bg-white hover:bg-slate-50"
+            disabled={isPipelineDisabled}
+            className={`px-4 py-2 border text-sm font-medium rounded-md shadow-sm transition-colors
+              ${isPipelineDisabled
+                ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                : 'border-slate-300 text-slate-700 bg-white hover:bg-slate-50'
+              }`}
           >
             Go to Pipeline
           </button>

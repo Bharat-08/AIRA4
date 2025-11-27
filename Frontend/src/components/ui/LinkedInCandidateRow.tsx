@@ -8,31 +8,35 @@ import {
   Phone,
 } from "lucide-react";
 import type { LinkedInCandidate } from "../../types/candidate";
-import RecommendPopup from "./RecommendPopup"; // Import RecommendPopup
-import CallSchedulePopup from "./CallSchedulePopup"; // Import CallSchedulePopup
+import RecommendPopup from "./RecommendPopup";
+import CallSchedulePopup from "./CallSchedulePopup";
+// ✅ Import API and Types
+import { recommendCandidate } from "../../api/pipeline";
+import type { JdSummary } from "../../api/roles";
 
-// Define the source type we'll be using
 type CandidateSource = 'ranked_candidates' | 'ranked_candidates_from_resume' | 'linkedin';
 
 interface Props {
   candidate: LinkedInCandidate;
   onToggleFavorite?: (
     candidateId: string,
-    source: CandidateSource, // <-- UPDATED TYPE
+    source: CandidateSource,
     favorite: boolean
   ) => void;
   onToggleSave?: (
     candidateId: string,
-    source: CandidateSource, // <-- UPDATED TYPE
+    source: CandidateSource,
     save_for_future: boolean
   ) => Promise<void> | void;
-  // We no longer need the 'source' prop, as this component *is* the linkedin source
+  // ✅ NEW: List of User JDs
+  userJds?: JdSummary[];
 }
 
 export function LinkedInCandidateRow({
   candidate,
   onToggleFavorite,
   onToggleSave,
+  userJds = [], // Default to empty
 }: Props) {
   const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
   const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).save_for_future);
@@ -60,12 +64,6 @@ export function LinkedInCandidateRow({
       .join("")
       .toUpperCase() || "C";
 
-  // noop helper
-  const noop = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
   // Updated: async save handler that calls parent prop and reverts on failure
   const handleSaveClick = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -80,10 +78,7 @@ export function LinkedInCandidateRow({
     setIsSaved(newVal); // optimistic
 
     try {
-      // --- THIS IS THE FIX ---
-      // Hard-code the source as "linkedin"
       await onToggleSave(String(profileId), "linkedin", newVal);
-      // -----------------------
     } catch (err) {
       // revert on failure
       setIsSaved(!newVal);
@@ -104,10 +99,7 @@ export function LinkedInCandidateRow({
     const newVal = !isFav;
     setIsFav(newVal); // Optimistic UI update
     try {
-      // --- THIS IS THE FIX ---
-      // Hard-code the source as "linkedin"
       await onToggleFavorite(String(profileId), "linkedin", newVal);
-      // -----------------------
     } catch (err) {
       setIsFav(!newVal); // Revert on failure
       // eslint-disable-next-line no-console
@@ -128,8 +120,23 @@ export function LinkedInCandidateRow({
     setIsCallOpen(true);
   };
 
+  // ✅ UPDATED: Handle recommendation
+  const handleRecommendSend = async (type: "role" | "team", selection: string) => {
+    if (type === "role" && profileId) {
+      try {
+        await recommendCandidate(String(profileId), "linkedin", selection);
+        console.info(`Successfully recommended ${displayName} to role ${selection}`);
+      } catch (err) {
+        console.error("Failed to recommend to role", err);
+      }
+    } else {
+      console.info(`Recommended to team: ${selection}`);
+    }
+    // No local state update for timestamps needed for LinkedIn candidates yet based on schema
+    setIsRecommendOpen(false);
+  };
+
   return (
-    // We use a React.Fragment to return the row AND the popups
     <>
       {/* EXACT 3 equal columns; align to header (left/center/right) */}
       <div className="grid grid-cols-3 items-center py-3 border-b border-gray-200 text-sm">
@@ -172,10 +179,10 @@ export function LinkedInCandidateRow({
         {/* Actions (left-aligned inside the third column) */}
         <div className="flex items-center justify-start gap-3 text-gray-500 pl-1">
           <button
-            onClick={handleSaveClick} // Use save handler
-            title={isSaved ? 'Unsave Candidate' : 'Save Candidate'} // Dynamic title
+            onClick={handleSaveClick} 
+            title={isSaved ? 'Unsave Candidate' : 'Save Candidate'} 
             className="p-1 rounded hover:bg-slate-100 transition-colors"
-            aria-pressed={isSaved} // Accessibility
+            aria-pressed={isSaved} 
           >
             <Bookmark size={18} className={isSaved ? 'text-blue-600' : 'text-gray-500'} /> 
           </button>
@@ -188,14 +195,14 @@ export function LinkedInCandidateRow({
             <Star size={18} className={isFav ? 'text-yellow-400' : 'text-gray-500'} />
           </button>
           <button
-            onClick={handleRecommendClick} // Use recommend handler
+            onClick={handleRecommendClick} 
             title="Recommend"
             className="p-1 rounded hover:bg-slate-100 transition-colors"
           >
             <Send size={18} />
           </button>
           <button
-            onClick={handleCallClick} // Use call handler
+            onClick={handleCallClick} 
             title="Schedule Call"
             className="p-1 rounded hover:bg-slate-100 transition-colors"
           >
@@ -208,10 +215,8 @@ export function LinkedInCandidateRow({
       <RecommendPopup
         isOpen={isRecommendOpen}
         onClose={() => setIsRecommendOpen(false)}
-        onSend={(type, selection) => {
-          console.log('Recommend:', type, selection);
-          // Add logic to handle the recommendation
-        }}
+        onSend={handleRecommendSend} // ✅ Use new handler
+        jds={userJds} // ✅ Pass JDs
       />
       <CallSchedulePopup
         isOpen={isCallOpen}
@@ -219,7 +224,7 @@ export function LinkedInCandidateRow({
         candidateName={displayName}
         onSend={(message, channel) => {
           console.log('Send message:', channel, message);
-          // Add logic to send the message
+          setIsCallOpen(false);
         }}
       />
     </>

@@ -373,17 +373,17 @@ async def trigger_combined_search(
     jd_id: str = Form(...),
     prompt: Optional[str] = Form(None),
     search_option: int = Form(2),
-    file: Optional[UploadFile] = File(None),
+    files: List[UploadFile] = File(None),  # CHANGED: Accepts list of files
     current_user: User = Depends(get_current_user),
 ):
     """
-    Starts an Apollo/web search plus optionally processes a single uploaded resume.
+    Starts an Apollo/web search plus optionally processes multiple uploaded resumes.
     This endpoint should return immediately with HTTP 202. It enqueues:
       - apollo_search_task.delay(...)
-      - process_single_uploaded_resume_task.delay(...)  (only if a file was provided)
+      - process_single_uploaded_resume_task.delay(...)  (for each file provided)
     """
     user_id = str(current_user.id)
-    launched: Dict[str, str] = {}
+    launched: Dict[str, Any] = {}
     try:
         # Map search_option to search_mode string
         if search_option == 1:
@@ -402,19 +402,25 @@ async def trigger_combined_search(
         )
         launched["apollo_task_id"] = apollo_task.id
 
-        # If a file was provided, read bytes and enqueue the resume processing task
-        if file is not None:
-            try:
-                file_bytes = await file.read()
-                resume_task = process_single_uploaded_resume_task.delay(
-                    jd_id=jd_id,
-                    file_contents=file_bytes,
-                    user_id=user_id
-                )
-                launched["resume_task_id"] = resume_task.id
-            except Exception as fe:
-                logger.exception("Failed to enqueue resume processing task: %s", fe)
-                raise HTTPException(status_code=500, detail=f"Failed to enqueue resume processing task: {fe}")
+        # If files were provided, read bytes and enqueue the resume processing task for each
+        if files:
+            resume_task_ids = []
+            for file in files:
+                try:
+                    file_bytes = await file.read()
+                    # We reuse the "single" task for each file in the loop
+                    resume_task = process_single_uploaded_resume_task.delay(
+                        jd_id=jd_id,
+                        file_contents=file_bytes,
+                        user_id=user_id
+                    )
+                    resume_task_ids.append(resume_task.id)
+                except Exception as fe:
+                    logger.exception(f"Failed to enqueue resume processing task for file {file.filename}: {fe}")
+                    # We continue processing other files even if one fails
+            
+            if resume_task_ids:
+                launched["resume_task_ids"] = resume_task_ids
 
         return {"status": "processing", **launched}
     except HTTPException:
@@ -601,4 +607,3 @@ async def get_google_linkedin_results(task_id: str):
         )
 
     return payload
-

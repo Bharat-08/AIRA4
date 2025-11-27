@@ -52,6 +52,11 @@ class LinkedIn(Base):
     favourite: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    
+    # ✅ NEW: Recommended to Role Flag
+    is_recommended: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # ---------------------------
 
     # Relationships (optional convenience)
