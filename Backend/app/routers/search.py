@@ -1,11 +1,13 @@
 # backend/app/routers/search.py
 import logging
 import uuid
+import io
+import pandas as pd  # NEW: For data formatting
 from typing import Any, Dict, List, Iterable, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse  # NEW: StreamingResponse for downloads
 from pydantic import BaseModel
 
 # SQL helper
@@ -520,6 +522,143 @@ async def get_combined_results(
 
     except Exception as e:
         logger.exception("Error while fetching combined results: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- NEW ENDPOINT: Download Results ---
+@router.get("/download-results")
+async def download_results(
+    jd_id: str = Query(..., description="JD ID to fetch results for"),
+    format: str = Query("csv", description="File format: 'csv' or 'xlsx'"),
+    db: Session = Depends(get_db)
+):
+    """
+    Downloads search results (Web, Resume, LinkedIn) for a given JD in CSV or Excel format.
+    Columns: Name, Company, Role, Summary, Match Score, Strengths, Source.
+    """
+    try:
+        try:
+            jd_uuid = uuid.UUID(str(jd_id))
+        except Exception:
+            jd_uuid = jd_id
+
+        # 1. Fetch Web Candidates (ranked_candidates + public.search)
+        web_query = text("""
+            SELECT 
+                s.profile_name as name,
+                s.company,
+                s.role,
+                s.summary,
+                rc.match_score,
+                rc.strengths,
+                'Web Search' as source
+            FROM ranked_candidates rc
+            JOIN public.search s ON rc.profile_id = s.profile_id
+            WHERE rc.jd_id = :jd_id
+        """)
+        web_rows = db.execute(web_query, {"jd_id": jd_uuid}).fetchall()
+        web_data = [dict(row._mapping) for row in web_rows]
+
+        # 2. Fetch Resume Candidates (ranked_candidates_from_resume + public.resume)
+        # Using fallback for summary if it doesn't exist in public.resume, 
+        # but prioritizing extracting it if available.
+        try:
+            resume_query = text("""
+                SELECT 
+                    r.person_name as name,
+                    r.company,
+                    r.role,
+                    r.summary, 
+                    rcr.match_score,
+                    rcr.strengths,
+                    'Uploaded Resume' as source
+                FROM ranked_candidates_from_resume rcr
+                JOIN public.resume r ON rcr.resume_id = r.resume_id
+                WHERE rcr.jd_id = :jd_id
+            """)
+            resume_rows = db.execute(resume_query, {"jd_id": jd_uuid}).fetchall()
+            resume_data = [dict(row._mapping) for row in resume_rows]
+        except Exception as e:
+            logger.warning(f"Could not fetch resume details with summary: {e}. Rolling back and trying fallback.")
+            # IMPORTANT: Rollback the failed transaction before proceeding!
+            db.rollback()
+            
+            resume_fallback = text("""
+                SELECT 
+                    r.person_name as name,
+                    r.company,
+                    r.role,
+                    '' as summary, 
+                    rcr.match_score,
+                    rcr.strengths,
+                    'Uploaded Resume' as source
+                FROM ranked_candidates_from_resume rcr
+                JOIN public.resume r ON rcr.resume_id = r.resume_id
+                WHERE rcr.jd_id = :jd_id
+            """)
+            resume_rows = db.execute(resume_fallback, {"jd_id": jd_uuid}).fetchall()
+            resume_data = [dict(row._mapping) for row in resume_rows]
+
+        # 3. Fetch LinkedIn Candidates (public.linkedin)
+        linkedin_query = text("""
+            SELECT 
+                l.name,
+                l.company,
+                l.position as role,
+                l.summary,
+                NULL as match_score,
+                NULL as strengths,
+                'LinkedIn Sourcing' as source
+            FROM public.linkedin l
+            WHERE l.jd_id = :jd_id
+        """)
+        linkedin_rows = db.execute(linkedin_query, {"jd_id": jd_uuid}).fetchall()
+        linkedin_data = [dict(row._mapping) for row in linkedin_rows]
+
+        # Combine all data
+        all_data = web_data + resume_data + linkedin_data
+
+        if not all_data:
+            # Return empty file with headers
+            df = pd.DataFrame(columns=["name", "company", "role", "summary", "match_score", "strengths", "source"])
+        else:
+            df = pd.DataFrame(all_data)
+
+        # Rename columns for nicer export
+        df.rename(columns={
+            "name": "Candidate Name",
+            "company": "Company",
+            "role": "Role",
+            "summary": "Summary",
+            "match_score": "Match Score",
+            "strengths": "Strengths",
+            "source": "Source"
+        }, inplace=True)
+
+        # Generate File
+        stream = io.BytesIO()
+        if format.lower() == 'xlsx':
+            # Excel
+            with pd.ExcelWriter(stream, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Candidates')
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            filename = f"candidates_{jd_id}.xlsx"
+        else:
+            # CSV (Default)
+            df.to_csv(stream, index=False)
+            media_type = "text/csv"
+            filename = f"candidates_{jd_id}.csv"
+
+        stream.seek(0)
+        
+        return StreamingResponse(
+            stream,
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    except Exception as e:
+        logger.exception("Export failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

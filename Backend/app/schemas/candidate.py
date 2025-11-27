@@ -57,7 +57,7 @@ class RankedCandidate(RankedCandidateBase):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 # =====================================
@@ -112,7 +112,7 @@ class RankedCandidateFromResume(RankedCandidateFromResumeBase):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- NEW SCHEMAS FOR UPDATES ---
 class CandidateStageUpdate(BaseModel):

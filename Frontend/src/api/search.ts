@@ -427,3 +427,39 @@ export const fetchLinkedInCandidates = async (
 
   return response.json() as Promise<LinkedInCandidate[]>;
 };
+
+/* =========================================================
+   ✅ NEW: Download Search Results
+   ========================================================= */
+
+/**
+ * Downloads the search results for a specific JD in CSV or Excel format.
+ * @param jdId The ID of the job description.
+ * @param format 'csv' or 'xlsx'
+ */
+export const downloadSearchResults = async (jdId: string, format: 'csv' | 'xlsx' = 'csv'): Promise<void> => {
+  const url = new URL(`/api/search/download-results`, window.location.origin);
+  url.searchParams.set('jd_id', jdId);
+  url.searchParams.set('format', format);
+
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Failed to download results' }));
+    throw new Error(errorData.detail || 'Failed to download results');
+  }
+
+  // Handle file download in browser
+  const blob = await response.blob();
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.download = `candidates_${jdId}.${format}`; // Filename fallback
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(downloadUrl);
+};

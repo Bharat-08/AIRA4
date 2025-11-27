@@ -11,6 +11,7 @@ import {
   History,
   RefreshCw,
   XCircle,
+  Download, // <-- NEW: Import Download icon
 } from 'lucide-react';
 import type { User } from '../types/user';
 import { uploadJdFile, uploadResumeFiles, uploadBulkJds } from '../api/upload';
@@ -32,6 +33,7 @@ import {
   startGoogleLinkedinTask,
   getGoogleLinkedinResults,
   fetchLinkedInCandidates,
+  downloadSearchResults, // <-- NEW: Import download function
 } from '../api/search';
 
 // ✅ NEW: Import to sync data from pipeline
@@ -120,6 +122,9 @@ export function SearchPage({ user }: { user: User }) {
 
   // Limit for uploads
   const MAX_FILES_LIMIT = 3;
+  
+  // NEW: Download loading state
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const STORAGE_KEY = useMemo(() => {
     const maybeId = (user as unknown as { id?: string })?.id;
@@ -467,6 +472,30 @@ export function SearchPage({ user }: { user: User }) {
         setUploadStatus({ message: (error as Error).message, type: 'error' });
         setIsRankingLoading(false);
       }
+    }
+  };
+
+  // NEW: Handle Download
+  const handleDownload = async (format: 'csv' | 'xlsx') => {
+    if (!currentJd) {
+        setUploadStatus({ message: 'Please select a Job Description first.', type: 'error' });
+        return;
+    }
+    
+    // Only allow download if we have results (either regular candidates or linkedin candidates)
+    if (!candidates.length && !linkedInCandidates.length) {
+        setUploadStatus({ message: 'No candidates to download.', type: 'error' });
+        return;
+    }
+
+    try {
+      setIsDownloading(true);
+      await downloadSearchResults(currentJd.jd_id, format);
+      setUploadStatus({ message: 'Download started!', type: 'success' });
+    } catch (error) {
+      setUploadStatus({ message: (error as Error).message || 'Download failed', type: 'error' });
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -1047,12 +1076,31 @@ export function SearchPage({ user }: { user: User }) {
               <div className="flex-shrink-0">
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-lg font-semibold">Top Matching Candidates</h2>
-                  {isRankingLoading && (
-                    <div className="flex items-center gap-2 text-sm text-teal-600">
-                      <Loader />
-                      <span>Processing...</span>
-                    </div>
-                  )}
+                  <div className="flex gap-2">
+                     {/* Download Buttons */}
+                     <button
+                       onClick={() => handleDownload('csv')}
+                       disabled={isDownloading || (!candidates.length && !linkedInCandidates.length)}
+                       className="flex items-center gap-1 text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md disabled:opacity-50"
+                       title="Download CSV"
+                     >
+                       <Download size={14} /> CSV
+                     </button>
+                     <button
+                       onClick={() => handleDownload('xlsx')}
+                       disabled={isDownloading || (!candidates.length && !linkedInCandidates.length)}
+                       className="flex items-center gap-1 text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md disabled:opacity-50"
+                       title="Download Excel"
+                     >
+                       <Download size={14} /> Excel
+                     </button>
+                     {isRankingLoading && (
+                        <div className="flex items-center gap-2 text-sm text-teal-600 ml-2">
+                          <Loader />
+                          <span>Processing...</span>
+                        </div>
+                     )}
+                  </div>
                 </div>
                 <p className="text-sm text-gray-500 mb-4 h-5">{!isRankingLoading && helperText}</p>
 
