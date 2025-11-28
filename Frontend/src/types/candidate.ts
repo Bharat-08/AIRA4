@@ -73,6 +73,9 @@ export interface Candidate {
   // --- ADD THIS FIELD ---
   jd_name?: string | null;
 
+  // New field to check if candidate is recommended by current user
+  is_recommended?: boolean;
+
   // Legacy / fallback fields (kept for compatibility across app)
   name?: string | null;
   full_name?: string | null;
@@ -103,4 +106,5 @@ export interface LinkedInCandidate {
   summary?: string | null;
   created_at: string;
   save_for_future?: boolean;
+  is_recommended?: boolean;
 }

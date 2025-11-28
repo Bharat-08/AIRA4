@@ -201,12 +201,14 @@ export const downloadJdPipeline = async (
  * Triggers a CSV download for ALL candidates, respecting filters.
  */
 export const downloadAllCandidates = async (
-  filters: { favorite?: boolean; contacted?: boolean; save_for_future?: boolean } = {}
+  filters: { favorite?: boolean; contacted?: boolean; save_for_future?: boolean; recommended?: boolean } = {}
 ): Promise<void> => {
   const params = new URLSearchParams();
   if (filters.favorite) params.append('favorite', 'true');
   if (filters.contacted) params.append('contacted', 'true');
   if (filters.save_for_future) params.append('save_for_future', 'true');
+  // ✅ NEW: Handle recommended filter
+  if (filters.recommended) params.append('recommended', 'true');
 
   const res = await fetch(`/api/pipeline/all/download?${params.toString()}`, {
     credentials: 'include',

@@ -202,6 +202,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     favorite?: boolean;
     contacted?: boolean;
     save_for_future?: boolean;
+    recommended?: boolean; // ✅ Added recommended filter
   }>({});
 
   // Load JDs and default JD pipeline candidates (Role Pipeline)
@@ -333,7 +334,8 @@ export const PipelinePage = ({ user }: { user: User }) => {
       await downloadAllCandidates({
         favorite: allCandidatesFilters.favorite,
         contacted: allCandidatesFilters.contacted,
-        save_for_future: allCandidatesFilters.save_for_future
+        save_for_future: allCandidatesFilters.save_for_future,
+        recommended: allCandidatesFilters.recommended // ✅ Include recommended filter
       });
     } catch (err) {
       console.error("Download failed", err);
@@ -351,6 +353,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
           favorite: allCandidatesFilters.favorite,
           contacted: allCandidatesFilters.contacted,
           save_for_future: allCandidatesFilters.save_for_future,
+          recommended: allCandidatesFilters.recommended, // ✅ Include recommended filter
         });
 
         if (allCandidatesPage === 1) {
@@ -568,7 +571,14 @@ export const PipelinePage = ({ user }: { user: User }) => {
                   Saved for future
                 </button>
                 <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Recommended to you</button>
-                <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100 border border-blue-200 text-blue-600 bg-blue-50">You recommended</button>
+                
+                {/* ✅ Updated: Wired up 'You recommended' button */}
+                <button 
+                  className={getFilterButtonClass(!!allCandidatesFilters.recommended)}
+                  onClick={() => handleAllFilterChange('recommended', allCandidatesFilters.recommended ? undefined : true)}
+                >
+                  You recommended
+                </button>
               </div>
               <div className="candidates-table">
                 <div className="grid grid-cols-12 text-xs font-semibold text-slate-600 uppercase py-3 px-2 bg-slate-50 border-b border-slate-200">

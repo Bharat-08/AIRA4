@@ -76,9 +76,16 @@ class PipelineCandidateResponse(BaseModel):
     summary: Optional[str] = None  # Added summary field
     
     jd_name: Optional[str] = None
+    is_recommended: bool = False  # ✅ Added to response model
 
     class Config:
         orm_mode = True
+
+
+class RecommendRequest(BaseModel):
+    candidate_id: UUID4
+    source: str  # 'ranked_candidates', 'ranked_candidates_from_resume', or 'linkedin'
+    target_jd_id: UUID4
 
 
 class StageUpdateRequest(BaseModel):
@@ -90,6 +97,113 @@ router = APIRouter(
     tags=["Pipeline"],
     dependencies=[Depends(get_current_user)]
 )
+
+
+# --- NEW ENDPOINT BEFORE DYNAMIC ROUTE ---
+@router.post("/recommend")
+async def recommend_candidate(
+    payload: RecommendRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Recommends a candidate to another JD by creating a new entry 
+    in the appropriate table linked to the target JD.
+    """
+    try:
+        if payload.source == "ranked_candidates":
+            existing = db.query(RankedCandidate).filter(
+                RankedCandidate.rank_id == payload.candidate_id,
+                RankedCandidate.user_id == str(current_user.id)
+            ).first()
+            
+            if not existing:
+                raise HTTPException(status_code=404, detail="Candidate not found")
+
+            # Check if already exists in target JD
+            duplicate = db.query(RankedCandidate).filter(
+                RankedCandidate.jd_id == payload.target_jd_id,
+                RankedCandidate.profile_id == existing.profile_id
+            ).first()
+            
+            if duplicate:
+                return {"message": "Candidate already in target pipeline"}
+
+            new_entry = RankedCandidate(
+                user_id=existing.user_id,
+                jd_id=payload.target_jd_id,
+                profile_id=existing.profile_id,
+                match_score=existing.match_score, # Optional: carry over score
+                strengths=existing.strengths,
+                linkedin_url=existing.linkedin_url,
+                is_recommended=True,
+                stage="In Consideration"
+            )
+            db.add(new_entry)
+
+        elif payload.source == "ranked_candidates_from_resume":
+            existing = db.query(RankedCandidateFromResume).filter(
+                RankedCandidateFromResume.rank_id == payload.candidate_id,
+                RankedCandidateFromResume.user_id == str(current_user.id)
+            ).first()
+            
+            if not existing:
+                raise HTTPException(status_code=404, detail="Candidate not found")
+
+            duplicate = db.query(RankedCandidateFromResume).filter(
+                RankedCandidateFromResume.jd_id == payload.target_jd_id,
+                RankedCandidateFromResume.resume_id == existing.resume_id
+            ).first()
+
+            if duplicate:
+                return {"message": "Candidate already in target pipeline"}
+
+            new_entry = RankedCandidateFromResume(
+                user_id=existing.user_id,
+                jd_id=payload.target_jd_id,
+                resume_id=existing.resume_id,
+                match_score=existing.match_score,
+                strengths=existing.strengths,
+                linkedin_url=existing.linkedin_url,
+                is_recommended=True,
+                stage="In Consideration"
+            )
+            db.add(new_entry)
+
+        elif payload.source == "linkedin":
+            existing = db.query(LinkedIn).filter(
+                LinkedIn.linkedin_profile_id == payload.candidate_id,
+                LinkedIn.user_id == str(current_user.id)
+            ).first()
+            
+            if not existing:
+                raise HTTPException(status_code=404, detail="Candidate not found")
+            
+            # For LinkedIn, we create a new LinkedIn entry for the new JD
+            new_entry = LinkedIn(
+                user_id=existing.user_id,
+                jd_id=payload.target_jd_id,
+                name=existing.name,
+                profile_link=existing.profile_link,
+                position=existing.position,
+                company=existing.company,
+                summary=existing.summary,
+                is_recommended=True
+            )
+            db.add(new_entry)
+
+        else:
+            raise HTTPException(status_code=400, detail="Invalid source type")
+
+        db.commit()
+        return {"message": "Candidate recommended successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error recommending candidate: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to recommend candidate")
 
 
 @router.get("/{jd_id}", response_model=List[PipelineCandidateResponse])
@@ -175,6 +289,7 @@ async def get_pipeline_for_jd(
                 company=profile_data.get("company"),
                 summary=profile_data.get("summary"), # Map summary
                 jd_name=jd_data.get("role") if jd_data else None,
+                is_recommended=bool(rc.is_recommended), # ✅ Map is_recommended
             )
             final_pipeline.append(candidate_data)
             
@@ -199,6 +314,7 @@ async def get_pipeline_for_jd(
                 company=lc.company,
                 summary=lc.summary, # LinkedIn model has summary
                 jd_name=jd_data.get("role") if jd_data else None,
+                is_recommended=bool(lc.is_recommended), # ✅ Map is_recommended
             )
             final_pipeline.append(linkedin_candidate_data)
 
@@ -249,7 +365,7 @@ async def download_pipeline_for_jd_csv(
     # Header
     writer.writerow([
         "Profile Name", "Company", "Role", "Summary", 
-        "Match Score", "Strengths", "Stage", "Status", "LinkedIn URL"
+        "Match Score", "Strengths", "Stage", "Status", "LinkedIn URL", "Recommended"
     ])
     
     for c in filtered:
@@ -263,7 +379,8 @@ async def download_pipeline_for_jd_csv(
             c.strengths or "",
             c.stage or "",
             status_label,
-            c.linkedin_url or ""
+            c.linkedin_url or "",
+            "Yes" if c.is_recommended else "No"
         ])
     
     output.seek(0)
@@ -279,6 +396,7 @@ async def download_all_candidates_csv(
     favorite: Optional[bool] = Query(None),
     contacted: Optional[bool] = Query(None),
     save_for_future: Optional[bool] = Query(None),
+    recommended: Optional[bool] = Query(None),  # ✅ Added parameter
     db: Session = Depends(get_db),
     supabase: Client = Depends(get_supabase_client),
     current_user: User = Depends(get_current_user),
@@ -305,6 +423,12 @@ async def download_all_candidates_csv(
             filters_ranked.append(RankedCandidate.save_for_future.is_(save_for_future))
             filters_resume.append(RankedCandidateFromResume.save_for_future.is_(save_for_future))
             filters_linkedin.append(LinkedIn.save_for_future.is_(save_for_future))
+
+        # ✅ NEW: Recommended filter
+        if recommended is not None:
+            filters_ranked.append(RankedCandidate.is_recommended.is_(recommended))
+            filters_resume.append(RankedCandidateFromResume.is_recommended.is_(recommended))
+            filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
 
         # 2. Query local DB (Fetch ALL, no pagination)
         ranked_rows = db.query(RankedCandidate).filter(*filters_ranked).all()
@@ -361,7 +485,7 @@ async def download_all_candidates_csv(
         # Header
         writer.writerow([
             "Name", "Company", "Role", "Summary", 
-            "Match Score", "Strengths", "Status", "JD Role", "LinkedIn URL"
+            "Match Score", "Strengths", "Status", "JD Role", "LinkedIn URL", "Recommended"
         ])
 
         for r in all_rows:
@@ -375,6 +499,7 @@ async def download_all_candidates_csv(
             c_strengths = ""
             c_status = "In Pipeline"
             c_url = ""
+            c_rec = False
 
             if isinstance(r, RankedCandidate):
                 pdata = profile_map.get(str(r.profile_id), {}) if r.profile_id else {}
@@ -386,6 +511,7 @@ async def download_all_candidates_csv(
                 c_strengths = r.strengths
                 c_status = "Favourited" if r.favorite else ("Contacted" if r.contacted else "In Pipeline")
                 c_url = r.linkedin_url
+                c_rec = r.is_recommended
 
             elif isinstance(r, RankedCandidateFromResume):
                 rdata = resume_map.get(str(r.resume_id), {}) if r.resume_id else {}
@@ -397,6 +523,7 @@ async def download_all_candidates_csv(
                 c_strengths = r.strengths
                 c_status = "Favourited" if r.favorite else ("Contacted" if r.contacted else "In Pipeline")
                 c_url = r.linkedin_url
+                c_rec = r.is_recommended
 
             elif isinstance(r, LinkedIn):
                 c_name = r.name
@@ -407,6 +534,7 @@ async def download_all_candidates_csv(
                 c_strengths = ""
                 c_status = "Favourited" if r.favourite else "In Pipeline"
                 c_url = r.profile_link
+                c_rec = r.is_recommended
             
             writer.writerow([
                 c_name or "",
@@ -417,7 +545,8 @@ async def download_all_candidates_csv(
                 c_strengths or "",
                 c_status,
                 jd_name,
-                c_url or ""
+                c_url or "",
+                "Yes" if c_rec else "No"
             ])
 
         output.seek(0)
@@ -439,6 +568,7 @@ async def get_all_ranked_candidates(
     favorite: Optional[bool] = Query(None),
     contacted: Optional[bool] = Query(None),
     save_for_future: Optional[bool] = Query(None),
+    recommended: Optional[bool] = Query(None),  # ✅ Added parameter
     db: Session = Depends(get_db),
     supabase: Client = Depends(get_supabase_client),
     current_user: User = Depends(get_current_user),
@@ -465,6 +595,12 @@ async def get_all_ranked_candidates(
             filters_ranked.append(RankedCandidate.save_for_future.is_(save_for_future))
             filters_resume.append(RankedCandidateFromResume.save_for_future.is_(save_for_future))
             filters_linkedin.append(LinkedIn.save_for_future.is_(save_for_future))
+
+        # ✅ NEW: Recommended filter
+        if recommended is not None:
+            filters_ranked.append(RankedCandidate.is_recommended.is_(recommended))
+            filters_resume.append(RankedCandidateFromResume.is_recommended.is_(recommended))
+            filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
 
         # 2. Query local DB
         ranked_rows = db.query(RankedCandidate).filter(*filters_ranked).all()
@@ -549,6 +685,7 @@ async def get_all_ranked_candidates(
                         company=pdata.get("company"),
                         summary=pdata.get("summary"), # Added
                         jd_name=jd_name,
+                        is_recommended=bool(r.is_recommended), # ✅ Added
                     )
                 )
             elif isinstance(r, RankedCandidateFromResume):
@@ -571,6 +708,7 @@ async def get_all_ranked_candidates(
                         company=rdata.get("organization") or None,
                         # summary not mapped for resume
                         jd_name=jd_name,
+                        is_recommended=bool(r.is_recommended), # ✅ Added
                     )
                 )
             elif isinstance(r, LinkedIn):
@@ -592,6 +730,7 @@ async def get_all_ranked_candidates(
                         company=r.company,
                         summary=r.summary, # Added
                         jd_name=jd_name,
+                        is_recommended=bool(r.is_recommended), # ✅ Added
                     )
                 )
 
