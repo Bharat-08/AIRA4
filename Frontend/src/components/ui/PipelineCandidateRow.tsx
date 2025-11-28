@@ -12,11 +12,13 @@ import {
 interface PipelineCandidateRowProps {
   candidate: Candidate;
   jdId?: string; // optional: used to invalidate the pipeline query if present
+  onNameClick?: () => void; // ✅ Added prop to trigger popup
 }
 
 export const PipelineCandidateRow: React.FC<PipelineCandidateRowProps> = ({
   candidate,
   jdId = '',
+  onNameClick,
 }) => {
   const queryClient = useQueryClient();
 
@@ -90,11 +92,22 @@ export const PipelineCandidateRow: React.FC<PipelineCandidateRowProps> = ({
           </button>
 
           <div className="flex items-start gap-3">
-            <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs">
+            {/* ✅ Clickable Avatar */}
+            <div 
+              onClick={onNameClick}
+              className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs cursor-pointer hover:bg-slate-400 transition-colors"
+            >
               {avatarInitial}
             </div>
-            <div>
-              <div className="font-medium text-sm text-slate-800">{candidate.profile_name || 'N/A'}</div>
+            
+            {/* ✅ Clickable Name/Role */}
+            <div 
+              onClick={onNameClick} 
+              className="cursor-pointer group"
+            >
+              <div className="font-medium text-sm text-slate-800 group-hover:text-teal-600 transition-colors">
+                {candidate.profile_name || 'N/A'}
+              </div>
               <div className="text-xs text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</div>
             </div>
           </div>

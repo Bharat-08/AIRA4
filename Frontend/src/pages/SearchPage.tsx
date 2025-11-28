@@ -11,8 +11,10 @@ import {
   History,
   RefreshCw,
   XCircle,
-  Download, // <-- NEW: Import Download icon
+  Download,
 } from 'lucide-react';
+// ✅ Updated: Import useLocation
+import { useLocation } from 'react-router-dom';
 import type { User } from '../types/user';
 import { uploadJdFile, uploadResumeFiles, uploadBulkJds } from '../api/upload';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
@@ -33,10 +35,9 @@ import {
   startGoogleLinkedinTask,
   getGoogleLinkedinResults,
   fetchLinkedInCandidates,
-  downloadSearchResults, // <-- NEW: Import download function
+  downloadSearchResults,
 } from '../api/search';
 
-// ✅ NEW: Import to sync data from pipeline
 import { getRankedCandidatesForJd } from '../api/pipeline';
 
 import type { Candidate, LinkedInCandidate } from '../types/candidate';
@@ -81,6 +82,8 @@ type PersistedCandidates = {
 
 export function SearchPage({ user }: { user: User }) {
   const userName = user.name || 'User';
+  // ✅ NEW: Use Location
+  const location = useLocation();
 
   const [userJds, setUserJds] = useState<JdSummary[]>([]);
   const [currentJd, setCurrentJd] = useState<JobDescriptionDetails | null>(null);
@@ -162,7 +165,7 @@ export function SearchPage({ user }: { user: User }) {
     }
   }, [candidates, currentJd, STORAGE_KEY]);
 
-  // Load JDs and restore persistence
+  // Load JDs and restore persistence (Updated for query param support)
   useEffect(() => {
     let parsedStorage: PersistedCandidates | null = null;
     isRestoringRef.current = true;
@@ -184,6 +187,31 @@ export function SearchPage({ user }: { user: User }) {
         const jds = await fetchJdsForUser();
         setUserJds(jds);
 
+        // ✅ 1. Check Query Param First (from Pipeline Page)
+        const params = new URLSearchParams(location.search);
+        const queryJdId = params.get('jd_id');
+        
+        if (queryJdId) {
+            const match = jds.find(j => j.jd_id === queryJdId);
+            if (match) {
+                // If query param exists, use it and clear potential storage mismatch
+                setCurrentJd({
+                  jd_id: match.jd_id,
+                  jd_parsed_summary: match.jd_parsed_summary || '',
+                  location: match.location || 'N/A',
+                  job_type: match.job_type || 'N/A',
+                  experience_required: match.experience_required || 'N/A',
+                });
+                
+                // Clear candidates to reset for new search unless specific logic is added
+                setCandidates([]);
+                setLinkedInCandidates([]);
+                isRestoringRef.current = false;
+                return;
+            }
+        }
+
+        // 2. Then check storage
         if (parsedStorage?.jd_id) {
           const match = jds.find((j) => j.jd_id === parsedStorage!.jd_id);
           if (match) {
@@ -199,8 +227,17 @@ export function SearchPage({ user }: { user: User }) {
           }
         }
 
+        // 3. Fallback to first JD
         if (jds.length > 0 && !currentJd) {
-          handleJdSelection(jds[0].jd_id, jds);
+          const first = jds[0];
+          setCurrentJd({
+              jd_id: first.jd_id,
+              jd_parsed_summary: first.jd_parsed_summary || '',
+              location: first.location || 'N/A',
+              job_type: first.job_type || 'N/A',
+              experience_required: first.experience_required || 'N/A',
+          });
+          setCandidates([]);
         }
       } catch {
         setUploadStatus({ message: 'Could not load your saved roles.', type: 'error' });
@@ -208,7 +245,7 @@ export function SearchPage({ user }: { user: User }) {
         isRestoringRef.current = false;
       }
     })();
-  }, [STORAGE_KEY]);
+  }, [STORAGE_KEY, location.search]); // ✅ Added location.search dependency
 
   // Sync Hook - Refetch candidate status when window focuses or JD changes
   useEffect(() => {

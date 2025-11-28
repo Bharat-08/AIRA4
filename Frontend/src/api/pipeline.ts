@@ -1,6 +1,6 @@
 // Frontend/src/api/pipeline.ts
 import type { Candidate } from '../types/candidate';
-import { toggleFavorite } from './search'; // reuse the existing favorite-toggle logic
+import { toggleFavorite, toggleSave } from './search'; // ✅ Updated import to include toggleSave
 
 /**
  * Fetches the ranked candidate pipeline for a specific JD.
@@ -131,6 +131,26 @@ export const updateCandidateFavoriteStatus = async (candidateId: string, favorit
     // Normalize error shape similar to other functions
     if (err instanceof Error) throw err;
     throw new Error('Failed to toggle favorite');
+  }
+};
+
+/**
+ * ✅ NEW: Updates the "save_for_future" status of a candidate.
+ * Reuses the existing frontend `toggleSave` function which calls
+ * the backend `/api/saved_candidates/toggle` endpoint.
+ *
+ * @param candidateId The candidate identifier (rank_id)
+ * @param save The desired boolean save value
+ */
+export const updateCandidateSaveStatus = async (candidateId: string, save: boolean): Promise<void> => {
+  try {
+    // For pipeline entries we use source 'ranked_candidates'.
+    await toggleSave(candidateId, 'ranked_candidates', save);
+    return;
+  } catch (err: unknown) {
+    // Normalize error shape similar to other functions
+    if (err instanceof Error) throw err;
+    throw new Error('Failed to update save status');
   }
 };
 

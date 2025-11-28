@@ -1,7 +1,8 @@
+// Frontend/src/pages/PipelinePage.tsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Header } from '../components/layout/Header';
-import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download } from 'lucide-react'; // Added Download
+import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download } from 'lucide-react';
 import type { User } from '../types/user';
 
 // --- API & TYPE IMPORTS ---
@@ -10,8 +11,9 @@ import {
   getAllRankedCandidates,
   updateCandidateStage,
   updateCandidateFavoriteStatus,
-  downloadJdPipeline,     // Added
-  downloadAllCandidates,  // Added
+  updateCandidateSaveStatus,
+  downloadJdPipeline,
+  downloadAllCandidates,
 } from '../api/pipeline';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
 import {
@@ -20,9 +22,13 @@ import {
   type CandidateStage,
 } from '../types/candidate';
 
+// --- SEARCH API IMPORTS (For Popup Actions) ---
+import { toggleFavorite, toggleSave } from '../api/search';
+
 // --- POPUP IMPORTS ---
 import RecommendPopup from '../components/ui/RecommendPopup';
 import CallSchedulePopup from '../components/ui/CallSchedulePopup';
+import CandidatePopupCard from '../components/ui/CandidatePopupCard';
 
 // --- Local Display Type ---
 type PipelineDisplayCandidate = Candidate & { stage: CandidateStage };
@@ -31,8 +37,17 @@ type PipelineDisplayCandidate = Candidate & { stage: CandidateStage };
 type StatusFilter = 'all' | 'favorite' | 'contacted';
 type StageFilter = 'all' | CandidateStage;
 
+// --- Helper for Sorting ---
+const sortCandidatesAlpha = (a: Candidate | PipelineDisplayCandidate, b: Candidate | PipelineDisplayCandidate) => {
+  const nameA = (a.profile_name || a.person_name || '').toLowerCase();
+  const nameB = (b.profile_name || b.person_name || '').toLowerCase();
+  return nameA.localeCompare(nameB);
+};
+
 // --- Row components ---
-const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => {
+
+// AllCandidatesRow
+const AllCandidatesRow: React.FC<{ candidate: Candidate; onNameClick: () => void }> = ({ candidate, onNameClick }) => {
   const avatarInitial =
     (candidate.profile_name || candidate.person_name || '')
       .split(' ')
@@ -53,11 +68,18 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => 
         <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" />
       </div>
       <div className="col-span-4 flex items-center gap-3">
-        <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs">
+        {/* Clickable Avatar */}
+        <div 
+          onClick={onNameClick}
+          className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs cursor-pointer hover:bg-slate-400 transition-colors"
+        >
           {avatarInitial}
         </div>
-        <div>
-          <p className="font-bold text-slate-800">{candidate.profile_name || candidate.person_name || 'N/A'}</p>
+        {/* Clickable Name */}
+        <div onClick={onNameClick} className="cursor-pointer group">
+          <p className="font-bold text-slate-800 group-hover:text-teal-600 transition-colors">
+            {candidate.profile_name || candidate.person_name || 'N/A'}
+          </p>
           <p className="text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</p>
         </div>
       </div>
@@ -77,20 +99,27 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate }> = ({ candidate }) => 
   );
 };
 
+// PipelineCandidateRow
 const PipelineCandidateRow: React.FC<{
   candidate: PipelineDisplayCandidate;
   onStageChange: (id: string, newStage: CandidateStage) => void;
   onFavoriteToggle: (profileIdOrRankId: string) => void;
-}> = ({ candidate, onStageChange, onFavoriteToggle }) => {
+  onNameClick: () => void;
+  isSelected: boolean;
+  onToggleSelection: (id: string) => void;
+}> = ({ candidate, onStageChange, onFavoriteToggle, onNameClick, isSelected, onToggleSelection }) => {
   const avatarInitial = candidate.profile_name?.split(' ').map(n => n[0]).join('').toUpperCase() || '??';
   const [isRecommendOpen, setIsRecommendOpen] = useState(false);
   const [isCallOpen, setIsCallOpen] = useState(false);
 
   const getStatusText = (candidate: Candidate) => {
+    // Priority status
+    if (candidate.save_for_future) return 'Saved for Future';
     return candidate.favorite ? 'Favourited' : 'In Pipeline';
   };
 
   const getStatusTextClass = (candidate: Candidate) => {
+    if (candidate.save_for_future) return 'text-purple-600 font-semibold';
     return candidate.favorite ? 'text-yellow-600 font-semibold' : 'text-gray-600';
   };
 
@@ -98,17 +127,29 @@ const PipelineCandidateRow: React.FC<{
 
   return (
     <>
-      <div className="grid grid-cols-12 items-center py-3 px-2 border-b border-slate-100 text-sm hover:bg-slate-50">
+      <div className={`grid grid-cols-12 items-center py-3 px-2 border-b border-slate-100 text-sm hover:bg-slate-50 ${isSelected ? 'bg-teal-50/50' : ''}`}>
         <div className="col-span-1 flex justify-center">
-          <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" />
+          <input 
+            type="checkbox" 
+            checked={isSelected}
+            onChange={() => candidate.rank_id && onToggleSelection(candidate.rank_id)}
+            className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" 
+          />
         </div>
 
         <div className="col-span-4 flex items-center gap-3">
-          <div className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs">
+          {/* Clickable Avatar */}
+          <div 
+            onClick={onNameClick}
+            className="w-9 h-9 flex-shrink-0 flex items-center justify-center bg-slate-300 text-slate-700 rounded-full font-bold text-xs cursor-pointer hover:bg-slate-400 transition-colors"
+          >
             {avatarInitial}
           </div>
-          <div>
-            <p className="font-bold text-slate-800">{candidate.profile_name || candidate.person_name || 'N/A'}</p>
+          {/* Clickable Name */}
+          <div onClick={onNameClick} className="cursor-pointer group">
+            <p className="font-bold text-slate-800 group-hover:text-teal-600 transition-colors">
+              {candidate.profile_name || candidate.person_name || 'N/A'}
+            </p>
             <p className="text-slate-500">{`${candidate.role || 'N/A'} at ${candidate.company || 'N/A'}`}</p>
           </div>
         </div>
@@ -193,7 +234,11 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const [activeStageFilter, setActiveStageFilter] = useState<StageFilter>('all');
   const [showStageDropdown, setShowStageDropdown] = useState(false);
 
-  // All Candidates states (independent)
+  // Selection State
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isProcessingAction, setIsProcessingAction] = useState(false);
+
+  // All Candidates states
   const [allCandidatesList, setAllCandidatesList] = useState<Candidate[]>([]);
   const [isAllCandidatesLoading, setIsAllCandidatesLoading] = useState(false);
   const [hasMoreAllCandidates, setHasMoreAllCandidates] = useState(false);
@@ -202,16 +247,20 @@ export const PipelinePage = ({ user }: { user: User }) => {
     favorite?: boolean;
     contacted?: boolean;
     save_for_future?: boolean;
-    recommended?: boolean; // ✅ Added recommended filter
+    recommended?: boolean;
   }>({});
 
-  // Load JDs and default JD pipeline candidates (Role Pipeline)
+  // Popup State
+  const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
+
+  // Load JDs and default JD pipeline candidates
   useEffect(() => {
     const loadJdsAndCandidates = async () => {
       setIsLoading(true);
       setActiveStatusFilter('all');
       setActiveStageFilter('all');
       setShowStageDropdown(false);
+      setSelectedIds(new Set());
       try {
         const jds = await fetchJdsForUser();
         setUserJds(jds);
@@ -245,6 +294,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     setActiveStatusFilter('all');
     setActiveStageFilter('all');
     setShowStageDropdown(false);
+    setSelectedIds(new Set());
 
     if (!newJdId) {
       setCandidates([]);
@@ -295,6 +345,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const favoritedCount = useMemo(() => candidates.filter(c => c.favorite).length, [candidates]);
   const contactedCount = useMemo(() => candidates.filter(c => c.contacted).length, [candidates]);
 
+  // Filtered and Sorted Candidates
   const filteredCandidates = useMemo(() => {
     let tempCandidates = [...candidates];
     if (activeStatusFilter === 'favorite') {
@@ -305,8 +356,65 @@ export const PipelinePage = ({ user }: { user: User }) => {
     if (activeStageFilter !== 'all') {
       tempCandidates = tempCandidates.filter(c => c.stage === activeStageFilter);
     }
-    return tempCandidates;
+    return tempCandidates.sort(sortCandidatesAlpha);
   }, [candidates, activeStatusFilter, activeStageFilter]);
+
+  // Selection Handlers
+  const handleSelectOne = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const visibleIds = filteredCandidates.map(c => c.rank_id).filter(Boolean) as string[];
+      setSelectedIds(new Set(visibleIds));
+    } else {
+      setSelectedIds(new Set());
+    }
+  };
+
+  const isAllSelected = filteredCandidates.length > 0 && 
+                        filteredCandidates.every(c => c.rank_id && selectedIds.has(c.rank_id));
+
+  // Save Selected Logic
+  const handleSaveSelected = async () => {
+    if (selectedIds.size === 0) return;
+    setIsProcessingAction(true);
+    
+    const idsToSave = Array.from(selectedIds);
+
+    // Optimistically update UI
+    setCandidates(prev => prev.map(c => 
+      c.rank_id && selectedIds.has(c.rank_id) ? { ...c, save_for_future: true } : c
+    ));
+
+    try {
+      await Promise.all(idsToSave.map(id => updateCandidateSaveStatus(id, true)));
+      setSelectedIds(new Set());
+    } catch (err) {
+      console.error("Failed to save selected candidates", err);
+    } finally {
+      setIsProcessingAction(false);
+    }
+  };
+
+  // ✅ New Handler: Search More Candidates
+  const handleSearchMore = () => {
+    if (selectedJdId) {
+      window.open(`/search?jd_id=${selectedJdId}`, '_blank');
+    } else {
+      window.open('/search', '_blank');
+    }
+  };
+
+  const sortedAllCandidates = useMemo(() => {
+    return [...allCandidatesList].sort(sortCandidatesAlpha);
+  }, [allCandidatesList]);
 
   const getFilterButtonClass = (isActive: boolean) => {
     return `px-3 py-1.5 rounded-md text-sm ${
@@ -314,7 +422,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }`;
   };
 
-  // --- DOWNLOAD HANDLERS ---
+  // Download Handlers
   const handleDownloadJdPipeline = async () => {
     if (!selectedJdId) return;
     try {
@@ -335,14 +443,13 @@ export const PipelinePage = ({ user }: { user: User }) => {
         favorite: allCandidatesFilters.favorite,
         contacted: allCandidatesFilters.contacted,
         save_for_future: allCandidatesFilters.save_for_future,
-        recommended: allCandidatesFilters.recommended // ✅ Include recommended filter
+        recommended: allCandidatesFilters.recommended
       });
     } catch (err) {
       console.error("Download failed", err);
       alert("Failed to download candidates");
     }
   };
-  // -------------------------
 
   useEffect(() => {
     if (activeTab !== 'allCandidates') return;
@@ -353,7 +460,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
           favorite: allCandidatesFilters.favorite,
           contacted: allCandidatesFilters.contacted,
           save_for_future: allCandidatesFilters.save_for_future,
-          recommended: allCandidatesFilters.recommended, // ✅ Include recommended filter
+          recommended: allCandidatesFilters.recommended,
         });
 
         if (allCandidatesPage === 1) {
@@ -386,6 +493,68 @@ export const PipelinePage = ({ user }: { user: User }) => {
     setAllCandidatesPage(prev => prev + 1);
   };
 
+  // Popup Handlers
+  const getCandidateId = (c: Candidate) => c.rank_id || c.profile_id || c.resume_id || '';
+
+  const handleUpdateCandidate = (updated: Candidate) => {
+    const updateList = (list: any[]) => list.map(c => 
+      getCandidateId(c) === getCandidateId(updated) ? { ...c, ...updated } : c
+    );
+
+    setCandidates(prev => updateList(prev));
+    setAllCandidatesList(prev => updateList(prev));
+
+    if (selectedCandidate && getCandidateId(selectedCandidate) === getCandidateId(updated)) {
+      setSelectedCandidate(updated);
+    }
+  };
+
+  const handlePopupFavorite = async (candidateId: string, source: any, newFavorite: boolean) => {
+    if (selectedCandidate) {
+      handleUpdateCandidate({ ...selectedCandidate, favorite: newFavorite });
+    }
+    try {
+      await toggleFavorite(candidateId, source, newFavorite);
+    } catch (err) {
+      console.error("Failed to toggle favorite from popup", err);
+      if (selectedCandidate) {
+        handleUpdateCandidate({ ...selectedCandidate, favorite: !newFavorite });
+      }
+    }
+  };
+
+  const handlePopupSave = async (candidateId: string, source: any, newSave: boolean) => {
+    if (selectedCandidate) {
+      handleUpdateCandidate({ ...selectedCandidate, save_for_future: newSave });
+    }
+    try {
+      await toggleSave(candidateId, source, newSave);
+    } catch (err) {
+      console.error("Failed to toggle save from popup", err);
+      if (selectedCandidate) {
+        handleUpdateCandidate({ ...selectedCandidate, save_for_future: !newSave });
+      }
+    }
+  };
+
+  const getCurrentList = () => {
+    return activeTab === 'rolePipeline' ? filteredCandidates : sortedAllCandidates;
+  };
+
+  const handlePrevCandidate = () => {
+    if (!selectedCandidate) return;
+    const list = getCurrentList();
+    const idx = list.findIndex(c => getCandidateId(c) === getCandidateId(selectedCandidate));
+    if (idx > 0) setSelectedCandidate(list[idx - 1]);
+  };
+
+  const handleNextCandidate = () => {
+    if (!selectedCandidate) return;
+    const list = getCurrentList();
+    const idx = list.findIndex(c => getCandidateId(c) === getCandidateId(selectedCandidate));
+    if (idx !== -1 && idx < list.length - 1) setSelectedCandidate(list[idx + 1]);
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 font-sans">
       <Header userName={user.name || "User"} showBackButton={true}/>
@@ -414,7 +583,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                   ))}
                 </select>
                 
-                {/* --- Role Pipeline Download Button --- */}
                 <button 
                   onClick={handleDownloadJdPipeline}
                   disabled={!selectedJdId}
@@ -488,7 +656,14 @@ export const PipelinePage = ({ user }: { user: User }) => {
 
               <div className="candidates-table">
                 <div className="grid grid-cols-12 text-xs font-semibold text-slate-600 uppercase py-3 px-2 bg-slate-50 border-b border-slate-200">
-                  <div className="col-span-1"></div>
+                  <div className="col-span-1 flex justify-center">
+                     <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                        onChange={handleSelectAll}
+                        checked={isAllSelected}
+                      />
+                  </div>
                   <div className="col-span-4">Name</div>
                   <div className="col-span-2">Status</div>
                   <div className="col-span-2">Stage</div>
@@ -508,6 +683,9 @@ export const PipelinePage = ({ user }: { user: User }) => {
                         candidate={candidate}
                         onStageChange={handleStageChange}
                         onFavoriteToggle={handleFavoriteToggle}
+                        onNameClick={() => setSelectedCandidate(candidate)}
+                        isSelected={candidate.rank_id ? selectedIds.has(candidate.rank_id) : false}
+                        onToggleSelection={handleSelectOne}
                       />
                     ))
                   )}
@@ -517,14 +695,30 @@ export const PipelinePage = ({ user }: { user: User }) => {
               <div className="mt-6 flex items-center justify-between">
                 <div className="flex gap-2">
                   <button className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700">Contact Selected</button>
-                  <button className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50">Save Selected for Future</button>
+                  
+                  <button 
+                    onClick={handleSaveSelected}
+                    disabled={selectedIds.size === 0 || isProcessingAction}
+                    className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isProcessingAction ? 'Saving...' : 'Save Selected for Future'}
+                  </button>
+                  
                   <button className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50">Remove Selected</button>
                 </div>
-                <button className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700">Search More Candidates</button>
+                
+                {/* ✅ Wired up Search More Candidates Button */}
+                <button 
+                  onClick={handleSearchMore}
+                  className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700"
+                >
+                  Search More Candidates
+                </button>
               </div>
             </>
           ) : (
             <>
+              {/* ... All Candidates Tab (Same as before) ... */}
               <div className="mb-4 flex justify-between items-center gap-4">
                  <div className="relative flex-grow">
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
@@ -534,7 +728,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                     className="w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 text-slate-900 placeholder:text-slate-500"
                   />
                 </div>
-                {/* --- All Candidates Download Button --- */}
                 <button 
                   onClick={handleDownloadAllCandidates}
                   className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-sm font-medium transition-colors"
@@ -572,7 +765,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                 </button>
                 <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Recommended to you</button>
                 
-                {/* ✅ Updated: Wired up 'You recommended' button */}
                 <button 
                   className={getFilterButtonClass(!!allCandidatesFilters.recommended)}
                   onClick={() => handleAllFilterChange('recommended', allCandidatesFilters.recommended ? undefined : true)}
@@ -592,11 +784,15 @@ export const PipelinePage = ({ user }: { user: User }) => {
                 <div className="max-h-[60vh] overflow-y-auto">
                   {isAllCandidatesLoading && allCandidatesPage === 1 ? (
                     <p className="text-center py-8 text-slate-500">Loading candidates...</p>
-                  ) : allCandidatesList.length === 0 ? (
+                  ) : sortedAllCandidates.length === 0 ? (
                     <p className="text-center py-8 text-slate-500">No candidates found.</p>
                   ) : (
-                    allCandidatesList.map(candidate => (
-                      <AllCandidatesRow key={candidate.rank_id} candidate={candidate} />
+                    sortedAllCandidates.map(candidate => (
+                      <AllCandidatesRow 
+                        key={candidate.rank_id} 
+                        candidate={candidate} 
+                        onNameClick={() => setSelectedCandidate(candidate)}
+                      />
                     ))
                   )}
                 </div>
@@ -617,6 +813,18 @@ export const PipelinePage = ({ user }: { user: User }) => {
           )}
         </div>
       </main>
+
+      {selectedCandidate && (
+        <CandidatePopupCard 
+          candidate={selectedCandidate}
+          onClose={() => setSelectedCandidate(null)}
+          onUpdateCandidate={handleUpdateCandidate}
+          onPrev={handlePrevCandidate}
+          onNext={handleNextCandidate}
+          onToggleFavorite={handlePopupFavorite}
+          onToggleSave={handlePopupSave}
+        />
+      )}
     </div>
   );
 };
