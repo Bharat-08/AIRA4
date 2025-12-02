@@ -38,7 +38,7 @@ import {
   downloadSearchResults,
 } from '../api/search';
 
-import { getRankedCandidatesForJd } from '../api/pipeline';
+// Removed: getRankedCandidatesForJd (no longer needed for expensive polling)
 
 import type { Candidate, LinkedInCandidate } from '../types/candidate';
 import { LinkedInCandidateRow } from '../components/ui/LinkedInCandidateRow';
@@ -128,6 +128,9 @@ export function SearchPage({ user }: { user: User }) {
   
   // NEW: Download loading state
   const [isDownloading, setIsDownloading] = useState(false);
+
+  // Unique Tab ID to prevent handling own messages
+  const tabId = useRef(Math.random().toString(36).substring(7)).current;
 
   const STORAGE_KEY = useMemo(() => {
     const maybeId = (user as unknown as { id?: string })?.id;
@@ -247,49 +250,48 @@ export function SearchPage({ user }: { user: User }) {
     })();
   }, [STORAGE_KEY, location.search]); // ✅ Added location.search dependency
 
-  // Sync Hook - Refetch candidate status when window focuses or JD changes
+  // 🔄 NEW: Efficient Sync via BroadcastChannel (Replaces expensive polling)
   useEffect(() => {
-    const syncCandidates = async () => {
-      if (!currentJd?.jd_id) return;
-      
-      try {
-        const freshData = await getRankedCandidatesForJd(currentJd.jd_id);
+    const channel = new BroadcastChannel('candidate_sync_channel');
+
+    channel.onmessage = (event) => {
+      // Ignore messages from self to prevent loops
+      if (event.data?.sourceTabId === tabId) return;
+
+      const { type, candidateId, value } = event.data;
+
+      // Helper to update a list of candidates
+      const updateList = (list: any[]) => list.map(c => {
+        // Match logic based on your candidate types (profile_id, resume_id, etc.)
+        const isMatch = (c.profile_id && c.profile_id === candidateId) || 
+                        (c.resume_id && c.resume_id === candidateId) || 
+                        (c.linkedin_profile_id && c.linkedin_profile_id === candidateId);
         
-        if (!freshData || freshData.length === 0) return;
+        if (isMatch) {
+          if (type === 'FAVORITE_UPDATED') return { ...c, favorite: value };
+          if (type === 'SAVE_UPDATED') return { ...c, save_for_future: value };
+        }
+        return c;
+      });
 
-        setCandidates(prev => {
-          let hasChanges = false;
-          const next = prev.map(c => {
-            const fresh = freshData.find(f => 
-              (c.rank_id && f.rank_id === c.rank_id) || 
-              (c.profile_id && f.profile_id === c.profile_id)
-            );
-
-            if (fresh) {
-              if (fresh.favorite !== c.favorite || fresh.save_for_future !== c.save_for_future) {
-                hasChanges = true;
-                return { 
-                  ...c, 
-                  favorite: fresh.favorite, 
-                  save_for_future: fresh.save_for_future 
-                };
-              }
-            }
-            return c;
-          });
-          return hasChanges ? next : prev;
-        });
-      } catch (err) {
-        console.warn("Background sync failed", err);
+      if (type === 'FAVORITE_UPDATED' || type === 'SAVE_UPDATED') {
+        setCandidates(prev => updateList(prev));
+        setLinkedInCandidates(prev => updateList(prev));
+        
+        // Also update selected candidate if open
+        if (selectedCandidate) {
+           const isMatch = (selectedCandidate.profile_id === candidateId) || 
+                           ((selectedCandidate as any).resume_id === candidateId);
+           if (isMatch) {
+              if (type === 'FAVORITE_UPDATED') setSelectedCandidate(prev => prev ? ({ ...prev, favorite: value }) : null);
+              if (type === 'SAVE_UPDATED') setSelectedCandidate(prev => prev ? ({ ...prev, save_for_future: value }) : null);
+           }
+        }
       }
     };
 
-    syncCandidates();
-
-    const onFocus = () => syncCandidates();
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [currentJd?.jd_id]);
+    return () => channel.close();
+  }, [tabId, selectedCandidate]);
 
 
   // Auto-select uploaded JD (Single & Bulk)
@@ -512,7 +514,7 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // NEW: Handle Download
+  // ✅ UPDATED: Handle Download with filtering
   const handleDownload = async (format: 'csv' | 'xlsx') => {
     if (!currentJd) {
         setUploadStatus({ message: 'Please select a Job Description first.', type: 'error' });
@@ -527,7 +529,30 @@ export function SearchPage({ user }: { user: User }) {
 
     try {
       setIsDownloading(true);
-      await downloadSearchResults(currentJd.jd_id, format);
+      
+      // 1. Filter Web Candidates (candidates with profile_id)
+      const profileIds = candidates
+        .filter(c => c.profile_id)
+        .map(c => c.profile_id!);
+
+      // 2. Filter Resume Candidates (candidates with resume_id)
+      const resumeIds = candidates
+        .filter(c => (c as any).resume_id)
+        .map(c => (c as any).resume_id);
+
+      // 3. Filter LinkedIn Candidates
+      const linkedinIds = linkedInCandidates
+        .map(l => l.linkedin_profile_id);
+
+      // Pass these lists to the API
+      await downloadSearchResults(
+          currentJd.jd_id, 
+          format, 
+          profileIds, 
+          resumeIds, 
+          linkedinIds
+      );
+      
       setUploadStatus({ message: 'Download started!', type: 'success' });
     } catch (error) {
       setUploadStatus({ message: (error as Error).message || 'Download failed', type: 'error' });
@@ -857,6 +882,7 @@ export function SearchPage({ user }: { user: User }) {
     source: 'ranked_candidates' | 'ranked_candidates_from_resume' = 'ranked_candidates',
     newFavorite: boolean
   ) => {
+    // 1. Optimistic Update
     const updateList = (list: Candidate[]) => list.map((c) => {
         const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
         if (isMatch) {
@@ -874,9 +900,21 @@ export function SearchPage({ user }: { user: User }) {
       }
     }
 
+    // 2. Broadcast Update to other tabs (Pipeline Page)
+    const channel = new BroadcastChannel('candidate_sync_channel');
+    channel.postMessage({ 
+        type: 'FAVORITE_UPDATED', 
+        candidateId, 
+        value: newFavorite,
+        sourceTabId: tabId
+    });
+    channel.close();
+
+    // 3. API Call
     try {
       await toggleFavorite(candidateId, source, newFavorite);
     } catch {
+      // Revert if failed
       setCandidates((prev) => prev.map((c) => {
           const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
           if (isMatch) return { ...c, favorite: !newFavorite };
@@ -898,6 +936,7 @@ export function SearchPage({ user }: { user: User }) {
     const prevCandidates = candidates;
     const prevLinked = linkedInCandidates;
 
+    // 1. Optimistic Update
     setCandidates((prev) =>
       prev.map((c) => {
         const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
@@ -924,6 +963,17 @@ export function SearchPage({ user }: { user: User }) {
       })
     );
 
+    // 2. Broadcast Update
+    const channel = new BroadcastChannel('candidate_sync_channel');
+    channel.postMessage({ 
+        type: 'SAVE_UPDATED', 
+        candidateId, 
+        value: newSave,
+        sourceTabId: tabId
+    });
+    channel.close();
+
+    // 3. API Call
     try {
       await toggleSave(candidateId, source, newSave);
     } catch {

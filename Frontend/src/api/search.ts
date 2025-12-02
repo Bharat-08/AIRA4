@@ -429,22 +429,39 @@ export const fetchLinkedInCandidates = async (
 };
 
 /* =========================================================
-   ✅ NEW: Download Search Results
+   ✅ NEW: Download Search Results (Updated with filtering)
    ========================================================= */
 
 /**
  * Downloads the search results for a specific JD in CSV or Excel format.
- * @param jdId The ID of the job description.
+ * Now supports filtering by specific candidate IDs to match the current view.
+ * * @param jdId The ID of the job description.
  * @param format 'csv' or 'xlsx'
+ * @param profileIds List of web candidate profile IDs
+ * @param resumeIds List of resume candidate IDs
+ * @param linkedinIds List of LinkedIn candidate IDs
  */
-export const downloadSearchResults = async (jdId: string, format: 'csv' | 'xlsx' = 'csv'): Promise<void> => {
-  const url = new URL(`/api/search/download-results`, window.location.origin);
-  url.searchParams.set('jd_id', jdId);
-  url.searchParams.set('format', format);
-
-  const response = await fetch(url.toString(), {
-    method: 'GET',
+export const downloadSearchResults = async (
+  jdId: string, 
+  format: 'csv' | 'xlsx' = 'csv',
+  profileIds?: string[],
+  resumeIds?: string[],
+  linkedinIds?: string[]
+): Promise<void> => {
+  
+  const response = await fetch(`/api/search/download-results`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
     credentials: 'include',
+    body: JSON.stringify({
+      jd_id: jdId,
+      format: format,
+      profile_ids: profileIds || [],
+      resume_ids: resumeIds || [],
+      linkedin_ids: linkedinIds || []
+    })
   });
 
   if (!response.ok) {
@@ -457,7 +474,7 @@ export const downloadSearchResults = async (jdId: string, format: 'csv' | 'xlsx'
   const downloadUrl = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = downloadUrl;
-  a.download = `candidates_${jdId}.${format}`; // Filename fallback
+  a.download = `candidates_${jdId}.${format}`;
   document.body.appendChild(a);
   a.click();
   a.remove();

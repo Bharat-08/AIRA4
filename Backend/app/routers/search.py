@@ -6,7 +6,7 @@ import pandas as pd  # NEW: For data formatting
 from typing import Any, Dict, List, Iterable, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse  # NEW: StreamingResponse for downloads
 from pydantic import BaseModel
 
@@ -62,29 +62,19 @@ class ApolloSearchRequest(BaseModel):
     prompt: Optional[str] = None
 
 
+# --- NEW: Download Request Model ---
+class DownloadRequest(BaseModel):
+    jd_id: str
+    format: str = "csv"
+    profile_ids: Optional[List[str]] = []
+    resume_ids: Optional[List[str]] = []
+    linkedin_ids: Optional[List[str]] = []
+
+
 # --- ROUTER SETUP ---
 router = APIRouter()
 logger = logging.getLogger(__name__)
 linkedin_finder_agent = LinkedInFinder()
-
-
-# --- HELPER: Date Sorting Key ---
-def date_sort_key(item: Dict[str, Any]) -> datetime:
-    """
-    Helper to extract a datetime object from a dictionary for sorting.
-    Handles 'created_at' as datetime object, ISO string, or missing.
-    """
-    val = item.get("created_at")
-    if val is None:
-        return datetime.min
-    if isinstance(val, datetime):
-        return val
-    if isinstance(val, str):
-        try:
-            return datetime.fromisoformat(val)
-        except ValueError:
-            pass
-    return datetime.min
 
 
 def _extract_id_values(candidates: Iterable[Any], id_key_candidates: List[str]) -> List[str]:
@@ -305,7 +295,7 @@ async def get_search_results(task_id: str, db: Session = Depends(get_db)):
     """
     After Celery reports completion, take the returned ranked rows (with profile_id),
     enrich with favorites, then MERGE base profile fields (name/role/company/profile_url)
-    from the `public.search` table.
+    from the `public.search` table so the frontend always gets display fields.
     """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
@@ -336,10 +326,7 @@ async def get_search_results(task_id: str, db: Session = Depends(get_db)):
     base_map = _fetch_search_base_map(db, profile_ids)
     merged = _merge_web_ranked_with_search_base(enriched, base_map)
 
-    # 3) ✅ SORT BY CREATED_AT (Newest First)
-    merged_sorted = sorted(merged, key=date_sort_key, reverse=True)
-
-    return {"status": payload.get("status", "completed"), "data": merged_sorted}
+    return {"status": payload.get("status", "completed"), "data": merged}
 
 
 @router.post("/rank-resumes", status_code=status.HTTP_202_ACCEPTED)
@@ -357,7 +344,7 @@ async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
     """
     After Celery reports completion, take the returned ranked rows (with resume_id),
     enrich with favorites, then MERGE base fields (person_name/role/company/profile_url)
-    from the `public.resume` table.
+    from the `public.resume` table so the frontend always gets display fields.
     """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
@@ -388,10 +375,7 @@ async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
     base_map = _fetch_resume_base_map(db, resume_ids)
     merged = _merge_resume_ranked_with_resume_base(enriched, base_map)
 
-    # 3) ✅ SORT BY CREATED_AT (Newest First)
-    merged_sorted = sorted(merged, key=date_sort_key, reverse=True)
-
-    return {"status": payload.get("status", "completed"), "data": merged_sorted}
+    return {"status": payload.get("status", "completed"), "data": merged}
 
 
 # --- NEW ENDPOINT: Combined Search (start tasks) ---
@@ -468,6 +452,7 @@ async def get_combined_results(
     Returns combined results from:
       - ranked_candidates (web)  JOIN search on (profile_id, jd_id)
       - ranked_candidates_from_resume (uploaded resumes) JOIN resume on (resume_id, jd_id)
+    This version avoids importing app.models.search and app.models.resume.
     """
     try:
         try:
@@ -527,8 +512,14 @@ async def get_combined_results(
                 enriched.append(it)
 
         # ---- 5. SORT AND RETURN ----
-        # ✅ UPDATED: Sort by Newest to Oldest (created_at desc)
-        enriched_sorted = sorted(enriched, key=date_sort_key, reverse=True)
+        def score_val(x):
+            ms = x.get("match_score")
+            try:
+                return float(ms) if ms is not None else -9999.0
+            except Exception:
+                return -9999.0
+
+        enriched_sorted = sorted(enriched, key=score_val, reverse=True)
 
         # JSON-serializable datetimes
         for item in enriched_sorted:
@@ -543,25 +534,35 @@ async def get_combined_results(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- NEW ENDPOINT: Download Results ---
-@router.get("/download-results")
+# --- UPDATED: Download Results (POST with Filtering + Fixed SQL) ---
+@router.post("/download-results")
 async def download_results(
-    jd_id: str = Query(..., description="JD ID to fetch results for"),
-    format: str = Query("csv", description="File format: 'csv' or 'xlsx'"),
+    request: DownloadRequest = Body(...),
     db: Session = Depends(get_db)
 ):
     """
     Downloads search results (Web, Resume, LinkedIn) for a given JD in CSV or Excel format.
-    Columns: Name, Company, Role, Summary, Match Score, Strengths, Source.
+    Accepts specific IDs to filter the download to exactly what is shown on frontend.
     """
     try:
+        jd_id = request.jd_id
         try:
             jd_uuid = uuid.UUID(str(jd_id))
         except Exception:
             jd_uuid = jd_id
 
+        # Lists of IDs to filter by (if provided)
+        p_ids = request.profile_ids or []
+        r_ids = request.resume_ids or []
+        l_ids = request.linkedin_ids or []
+
         # 1. Fetch Web Candidates (ranked_candidates + public.search)
-        web_query = text("""
+        # If frontend sent profile_ids, we filter by them.
+        web_where_clause = "WHERE rc.jd_id = :jd_id"
+        if p_ids:
+            web_where_clause += " AND rc.profile_id = ANY(:p_ids)"
+        
+        web_query = text(f"""
             SELECT 
                 s.profile_name as name,
                 s.company,
@@ -572,53 +573,42 @@ async def download_results(
                 'Web Search' as source
             FROM ranked_candidates rc
             JOIN public.search s ON rc.profile_id = s.profile_id
-            WHERE rc.jd_id = :jd_id
+            {web_where_clause}
         """)
-        web_rows = db.execute(web_query, {"jd_id": jd_uuid}).fetchall()
+        
+        web_rows = db.execute(web_query, {"jd_id": jd_uuid, "p_ids": p_ids}).fetchall()
         web_data = [dict(row._mapping) for row in web_rows]
 
         # 2. Fetch Resume Candidates (ranked_candidates_from_resume + public.resume)
-        # Using fallback for summary if it doesn't exist in public.resume, 
-        # but prioritizing extracting it if available.
-        try:
-            resume_query = text("""
-                SELECT 
-                    r.person_name as name,
-                    r.company,
-                    r.role,
-                    r.summary, 
-                    rcr.match_score,
-                    rcr.strengths,
-                    'Uploaded Resume' as source
-                FROM ranked_candidates_from_resume rcr
-                JOIN public.resume r ON rcr.resume_id = r.resume_id
-                WHERE rcr.jd_id = :jd_id
-            """)
-            resume_rows = db.execute(resume_query, {"jd_id": jd_uuid}).fetchall()
-            resume_data = [dict(row._mapping) for row in resume_rows]
-        except Exception as e:
-            logger.warning(f"Could not fetch resume details with summary: {e}. Rolling back and trying fallback.")
-            # IMPORTANT: Rollback the failed transaction before proceeding!
-            db.rollback()
-            
-            resume_fallback = text("""
-                SELECT 
-                    r.person_name as name,
-                    r.company,
-                    r.role,
-                    '' as summary, 
-                    rcr.match_score,
-                    rcr.strengths,
-                    'Uploaded Resume' as source
-                FROM ranked_candidates_from_resume rcr
-                JOIN public.resume r ON rcr.resume_id = r.resume_id
-                WHERE rcr.jd_id = :jd_id
-            """)
-            resume_rows = db.execute(resume_fallback, {"jd_id": jd_uuid}).fetchall()
-            resume_data = [dict(row._mapping) for row in resume_rows]
+        # ✅ FIX: Removed 'r.summary' which caused the SQL error. Used '' as summary.
+        resume_where_clause = "WHERE rcr.jd_id = :jd_id"
+        if r_ids:
+            resume_where_clause += " AND rcr.resume_id = ANY(:r_ids)"
+
+        resume_query = text(f"""
+            SELECT 
+                r.person_name as name,
+                r.company,
+                r.role,
+                '' as summary, 
+                rcr.match_score,
+                rcr.strengths,
+                'Uploaded Resume' as source
+            FROM ranked_candidates_from_resume rcr
+            JOIN public.resume r ON rcr.resume_id = r.resume_id
+            {resume_where_clause}
+        """)
+        
+        resume_rows = db.execute(resume_query, {"jd_id": jd_uuid, "r_ids": r_ids}).fetchall()
+        resume_data = [dict(row._mapping) for row in resume_rows]
 
         # 3. Fetch LinkedIn Candidates (public.linkedin)
-        linkedin_query = text("""
+        linkedin_where_clause = "WHERE l.jd_id = :jd_id"
+        if l_ids:
+            # Assuming 'linkedin_profile_id' is the primary key/unique ID in public.linkedin
+            linkedin_where_clause += " AND l.linkedin_profile_id = ANY(:l_ids)"
+
+        linkedin_query = text(f"""
             SELECT 
                 l.name,
                 l.company,
@@ -628,9 +618,10 @@ async def download_results(
                 NULL as strengths,
                 'LinkedIn Sourcing' as source
             FROM public.linkedin l
-            WHERE l.jd_id = :jd_id
+            {linkedin_where_clause}
         """)
-        linkedin_rows = db.execute(linkedin_query, {"jd_id": jd_uuid}).fetchall()
+        
+        linkedin_rows = db.execute(linkedin_query, {"jd_id": jd_uuid, "l_ids": l_ids}).fetchall()
         linkedin_data = [dict(row._mapping) for row in linkedin_rows]
 
         # Combine all data
@@ -649,13 +640,13 @@ async def download_results(
             "role": "Role",
             "summary": "Summary",
             "match_score": "Match Score",
-            "strengths": "Strengths",
+            "strengths": "Strengths/Verdict",
             "source": "Source"
         }, inplace=True)
 
         # Generate File
         stream = io.BytesIO()
-        if format.lower() == 'xlsx':
+        if request.format.lower() == 'xlsx':
             # Excel
             with pd.ExcelWriter(stream, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False, sheet_name='Candidates')

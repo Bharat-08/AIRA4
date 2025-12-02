@@ -1,5 +1,5 @@
 // Frontend/src/pages/PipelinePage.tsx
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Header } from '../components/layout/Header';
 import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download, Loader2 } from 'lucide-react';
@@ -256,6 +256,9 @@ export const PipelinePage = ({ user }: { user: User }) => {
   // Popup State
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
 
+  // Unique Tab ID to prevent handling own messages
+  const tabId = useRef(Math.random().toString(36).substring(7)).current;
+
   // Infinite Scroll Callback
   const loadMoreAllCandidates = () => {
     if (!hasMoreAllCandidates || isAllCandidatesLoading) return;
@@ -268,6 +271,80 @@ export const PipelinePage = ({ user }: { user: User }) => {
     isAllCandidatesLoading,
     hasMoreAllCandidates
   );
+
+  // --- HELPER: Broadcast Update (Sends multiple IDs to ensure sync) ---
+  const broadcastUpdate = (
+    candidate: Candidate | PipelineDisplayCandidate, 
+    type: 'FAVORITE_UPDATED' | 'SAVE_UPDATED', 
+    value: boolean
+  ) => {
+    const channel = new BroadcastChannel('candidate_sync_channel');
+    
+    // We gather ALL IDs associated with this candidate.
+    // This is crucial because SearchPage might be indexed by profile_id while Pipeline is by rank_id.
+    const ids = [
+        candidate.rank_id,
+        candidate.profile_id,
+        (candidate as any).resume_id,
+        (candidate as any).linkedin_profile_id
+    ].filter(id => id); // Remove null/undefined
+
+    // Broadcast a message for EACH ID so any listener tracking that ID catches it.
+    ids.forEach(id => {
+        channel.postMessage({ 
+            type, 
+            candidateId: id, 
+            value,
+            sourceTabId: tabId
+        });
+    });
+    
+    channel.close();
+  };
+
+  // 🔄 SYNC: Listen for updates from Search Page
+  useEffect(() => {
+    const channel = new BroadcastChannel('candidate_sync_channel');
+
+    channel.onmessage = (event) => {
+      // Ignore messages from self
+      if (event.data?.sourceTabId === tabId) return;
+
+      const { type, candidateId, value } = event.data;
+
+      // Update function
+      const updateList = (list: any[]) => list.map(c => {
+        // Check if ANY of the candidate's IDs match the incoming ID
+        const isMatch = (c.rank_id && c.rank_id === candidateId) ||
+                        (c.profile_id && c.profile_id === candidateId) || 
+                        (c.resume_id && c.resume_id === candidateId) || 
+                        (c.linkedin_profile_id && c.linkedin_profile_id === candidateId);
+        
+        if (isMatch) {
+          if (type === 'FAVORITE_UPDATED') return { ...c, favorite: value };
+          if (type === 'SAVE_UPDATED') return { ...c, save_for_future: value };
+        }
+        return c;
+      });
+
+      if (type === 'FAVORITE_UPDATED' || type === 'SAVE_UPDATED') {
+        setCandidates(prev => updateList(prev) as PipelineDisplayCandidate[]);
+        setAllCandidatesList(prev => updateList(prev));
+        
+        // Update selected candidate popup if open
+        if (selectedCandidate) {
+           const c = selectedCandidate;
+           const isMatch = (c.rank_id === candidateId) || (c.profile_id === candidateId) || ((c as any).resume_id === candidateId);
+           if (isMatch) {
+              if (type === 'FAVORITE_UPDATED') setSelectedCandidate(prev => prev ? ({ ...prev, favorite: value }) : null);
+              if (type === 'SAVE_UPDATED') setSelectedCandidate(prev => prev ? ({ ...prev, save_for_future: value }) : null);
+           }
+        }
+      }
+    };
+
+    return () => channel.close();
+  }, [tabId, selectedCandidate]);
 
   // Load JDs and default JD pipeline candidates
   useEffect(() => {
@@ -348,13 +425,22 @@ export const PipelinePage = ({ user }: { user: User }) => {
     if (!candidate) return;
     const oldFavorite = candidate.favorite;
     const newFavorite = !oldFavorite;
+    
+    // 1. Optimistic Update
     setCandidates(prev => prev.map(c => c.rank_id === rankId ? { ...c, favorite: newFavorite } : c));
 
+    // 2. Broadcast to Other Tabs
+    broadcastUpdate(candidate, 'FAVORITE_UPDATED', newFavorite);
+
+    // 3. API Call
     try {
       await updateCandidateFavoriteStatus(rankId, newFavorite);
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
+      // Revert on failure
       setCandidates(prev => prev.map(c => c.rank_id === rankId ? { ...c, favorite: oldFavorite } : c));
+      // Revert broadcast (optional, but good practice)
+      broadcastUpdate(candidate, 'FAVORITE_UPDATED', oldFavorite);
     }
   };
 
@@ -404,11 +490,20 @@ export const PipelinePage = ({ user }: { user: User }) => {
     
     const idsToSave = Array.from(selectedIds);
 
-    // Optimistically update UI
+    // 1. Optimistic Update
     setCandidates(prev => prev.map(c => 
       c.rank_id && selectedIds.has(c.rank_id) ? { ...c, save_for_future: true } : c
     ));
 
+    // 2. Broadcast for each selected candidate
+    idsToSave.forEach(id => {
+      const candidate = candidates.find(c => c.rank_id === id);
+      if (candidate) {
+        broadcastUpdate(candidate, 'SAVE_UPDATED', true);
+      }
+    });
+
+    // 3. API Call
     try {
       await Promise.all(idsToSave.map(id => updateCandidateSaveStatus(id, true)));
       setSelectedIds(new Set());
@@ -512,7 +607,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
       getCandidateId(c) === getCandidateId(updated) ? { ...c, ...updated } : c
     );
 
-    setCandidates(prev => updateList(prev));
+    setCandidates(prev => updateList(prev) as PipelineDisplayCandidate[]);
     setAllCandidatesList(prev => updateList(prev));
 
     if (selectedCandidate && getCandidateId(selectedCandidate) === getCandidateId(updated)) {
@@ -521,29 +616,56 @@ export const PipelinePage = ({ user }: { user: User }) => {
   };
 
   const handlePopupFavorite = async (candidateId: string, source: any, newFavorite: boolean) => {
+    // 1. Local update
     if (selectedCandidate) {
       handleUpdateCandidate({ ...selectedCandidate, favorite: newFavorite });
     }
+    
+    // 2. Broadcast (Using helper to ensure all IDs sent)
+    if (selectedCandidate) {
+       broadcastUpdate(selectedCandidate, 'FAVORITE_UPDATED', newFavorite);
+    } else {
+       // Fallback if no full object, send just the ID we have
+       const channel = new BroadcastChannel('candidate_sync_channel');
+       channel.postMessage({ type: 'FAVORITE_UPDATED', candidateId, value: newFavorite, sourceTabId: tabId });
+       channel.close();
+    }
+
+    // 3. API
     try {
       await toggleFavorite(candidateId, source, newFavorite);
     } catch (err) {
       console.error("Failed to toggle favorite from popup", err);
       if (selectedCandidate) {
         handleUpdateCandidate({ ...selectedCandidate, favorite: !newFavorite });
+        broadcastUpdate(selectedCandidate, 'FAVORITE_UPDATED', !newFavorite);
       }
     }
   };
 
   const handlePopupSave = async (candidateId: string, source: any, newSave: boolean) => {
+    // 1. Local
     if (selectedCandidate) {
       handleUpdateCandidate({ ...selectedCandidate, save_for_future: newSave });
     }
+
+    // 2. Broadcast
+    if (selectedCandidate) {
+       broadcastUpdate(selectedCandidate, 'SAVE_UPDATED', newSave);
+    } else {
+       const channel = new BroadcastChannel('candidate_sync_channel');
+       channel.postMessage({ type: 'SAVE_UPDATED', candidateId, value: newSave, sourceTabId: tabId });
+       channel.close();
+    }
+
+    // 3. API
     try {
       await toggleSave(candidateId, source, newSave);
     } catch (err) {
       console.error("Failed to toggle save from popup", err);
       if (selectedCandidate) {
         handleUpdateCandidate({ ...selectedCandidate, save_for_future: !newSave });
+        broadcastUpdate(selectedCandidate, 'SAVE_UPDATED', !newSave);
       }
     }
   };
