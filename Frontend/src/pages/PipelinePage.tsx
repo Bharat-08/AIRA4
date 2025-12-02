@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Header } from '../components/layout/Header';
-import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download } from 'lucide-react';
+import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download, Loader2 } from 'lucide-react';
 import type { User } from '../types/user';
 
 // --- API & TYPE IMPORTS ---
@@ -24,6 +24,9 @@ import {
 
 // --- SEARCH API IMPORTS (For Popup Actions) ---
 import { toggleFavorite, toggleSave } from '../api/search';
+
+// --- HOOK IMPORTS ---
+import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 
 // --- POPUP IMPORTS ---
 import RecommendPopup from '../components/ui/RecommendPopup';
@@ -253,6 +256,19 @@ export const PipelinePage = ({ user }: { user: User }) => {
   // Popup State
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
 
+  // Infinite Scroll Callback
+  const loadMoreAllCandidates = () => {
+    if (!hasMoreAllCandidates || isAllCandidatesLoading) return;
+    setAllCandidatesPage(prev => prev + 1);
+  };
+
+  // Initialize Infinite Scroll Hook
+  const observerTarget = useInfiniteScroll(
+    loadMoreAllCandidates,
+    isAllCandidatesLoading,
+    hasMoreAllCandidates
+  );
+
   // Load JDs and default JD pipeline candidates
   useEffect(() => {
     const loadJdsAndCandidates = async () => {
@@ -403,7 +419,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   };
 
-  // ✅ New Handler: Search More Candidates
+  // Handler: Search More Candidates
   const handleSearchMore = () => {
     if (selectedJdId) {
       window.open(`/search?jd_id=${selectedJdId}`, '_blank');
@@ -486,11 +502,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
       return newFilters;
     });
     setAllCandidatesPage(1);
-  };
-
-  const loadMoreAllCandidates = () => {
-    if (!hasMoreAllCandidates || isAllCandidatesLoading) return;
-    setAllCandidatesPage(prev => prev + 1);
   };
 
   // Popup Handlers
@@ -707,7 +718,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
                   <button className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50">Remove Selected</button>
                 </div>
                 
-                {/* ✅ Wired up Search More Candidates Button */}
+                {/* Search More Candidates Button */}
                 <button 
                   onClick={handleSearchMore}
                   className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700"
@@ -718,7 +729,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
             </>
           ) : (
             <>
-              {/* ... All Candidates Tab (Same as before) ... */}
+              {/* --- All Candidates Tab --- */}
               <div className="mb-4 flex justify-between items-center gap-4">
                  <div className="relative flex-grow">
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
@@ -787,28 +798,32 @@ export const PipelinePage = ({ user }: { user: User }) => {
                   ) : sortedAllCandidates.length === 0 ? (
                     <p className="text-center py-8 text-slate-500">No candidates found.</p>
                   ) : (
-                    sortedAllCandidates.map(candidate => (
-                      <AllCandidatesRow 
-                        key={candidate.rank_id} 
-                        candidate={candidate} 
-                        onNameClick={() => setSelectedCandidate(candidate)}
-                      />
-                    ))
+                    <>
+                      {sortedAllCandidates.map(candidate => (
+                        <AllCandidatesRow 
+                          key={candidate.rank_id} 
+                          candidate={candidate} 
+                          onNameClick={() => setSelectedCandidate(candidate)}
+                        />
+                      ))}
+                      {/* Infinite Scroll Sentinel */}
+                      <div ref={observerTarget} className="h-4 w-full flex justify-center p-4">
+                        {isAllCandidatesLoading && <Loader2 className="animate-spin text-teal-600" />}
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
 
-              {hasMoreAllCandidates && (
-                <div className="flex justify-center mt-4">
-                  <button
-                    onClick={loadMoreAllCandidates}
-                    disabled={isAllCandidatesLoading}
-                    className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700 disabled:opacity-50"
+              {/* Footer for All Candidates Tab */}
+              <div className="mt-4 flex justify-end">
+                  <button 
+                    onClick={handleSearchMore}
+                    className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700"
                   >
-                    {isAllCandidatesLoading ? 'Loading...' : 'Load More'}
+                    Search More Candidates
                   </button>
-                </div>
-              )}
+              </div>
             </>
           )}
         </div>

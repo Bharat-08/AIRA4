@@ -68,6 +68,25 @@ logger = logging.getLogger(__name__)
 linkedin_finder_agent = LinkedInFinder()
 
 
+# --- HELPER: Date Sorting Key ---
+def date_sort_key(item: Dict[str, Any]) -> datetime:
+    """
+    Helper to extract a datetime object from a dictionary for sorting.
+    Handles 'created_at' as datetime object, ISO string, or missing.
+    """
+    val = item.get("created_at")
+    if val is None:
+        return datetime.min
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val)
+        except ValueError:
+            pass
+    return datetime.min
+
+
 def _extract_id_values(candidates: Iterable[Any], id_key_candidates: List[str]) -> List[str]:
     out: List[str] = []
     for c in candidates:
@@ -286,7 +305,7 @@ async def get_search_results(task_id: str, db: Session = Depends(get_db)):
     """
     After Celery reports completion, take the returned ranked rows (with profile_id),
     enrich with favorites, then MERGE base profile fields (name/role/company/profile_url)
-    from the `public.search` table so the frontend always gets display fields.
+    from the `public.search` table.
     """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
@@ -317,7 +336,10 @@ async def get_search_results(task_id: str, db: Session = Depends(get_db)):
     base_map = _fetch_search_base_map(db, profile_ids)
     merged = _merge_web_ranked_with_search_base(enriched, base_map)
 
-    return {"status": payload.get("status", "completed"), "data": merged}
+    # 3) ✅ SORT BY CREATED_AT (Newest First)
+    merged_sorted = sorted(merged, key=date_sort_key, reverse=True)
+
+    return {"status": payload.get("status", "completed"), "data": merged_sorted}
 
 
 @router.post("/rank-resumes", status_code=status.HTTP_202_ACCEPTED)
@@ -335,7 +357,7 @@ async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
     """
     After Celery reports completion, take the returned ranked rows (with resume_id),
     enrich with favorites, then MERGE base fields (person_name/role/company/profile_url)
-    from the `public.resume` table so the frontend always gets display fields.
+    from the `public.resume` table.
     """
     task_result = AsyncResult(task_id, app=celery_app)
     if not task_result.ready():
@@ -366,7 +388,10 @@ async def get_rank_resumes_results(task_id: str, db: Session = Depends(get_db)):
     base_map = _fetch_resume_base_map(db, resume_ids)
     merged = _merge_resume_ranked_with_resume_base(enriched, base_map)
 
-    return {"status": payload.get("status", "completed"), "data": merged}
+    # 3) ✅ SORT BY CREATED_AT (Newest First)
+    merged_sorted = sorted(merged, key=date_sort_key, reverse=True)
+
+    return {"status": payload.get("status", "completed"), "data": merged_sorted}
 
 
 # --- NEW ENDPOINT: Combined Search (start tasks) ---
@@ -443,7 +468,6 @@ async def get_combined_results(
     Returns combined results from:
       - ranked_candidates (web)  JOIN search on (profile_id, jd_id)
       - ranked_candidates_from_resume (uploaded resumes) JOIN resume on (resume_id, jd_id)
-    This version avoids importing app.models.search and app.models.resume.
     """
     try:
         try:
@@ -503,14 +527,8 @@ async def get_combined_results(
                 enriched.append(it)
 
         # ---- 5. SORT AND RETURN ----
-        def score_val(x):
-            ms = x.get("match_score")
-            try:
-                return float(ms) if ms is not None else -9999.0
-            except Exception:
-                return -9999.0
-
-        enriched_sorted = sorted(enriched, key=score_val, reverse=True)
+        # ✅ UPDATED: Sort by Newest to Oldest (created_at desc)
+        enriched_sorted = sorted(enriched, key=date_sort_key, reverse=True)
 
         # JSON-serializable datetimes
         for item in enriched_sorted:
