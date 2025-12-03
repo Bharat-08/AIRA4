@@ -332,17 +332,8 @@ export function CandidateRow({
           {renderLinkedInButton()}
         </div>
 
-        {/* Actions */}
+        {/* Actions (Reordered: Star -> Call -> Recommend -> Save) */}
         <div className="col-span-1 flex items-center gap-3 text-gray-500 justify-end">
-          <button
-            onClick={handleSaveClick}
-            title={isSaved ? "Unsave" : "Save"}
-            aria-pressed={isSaved}
-            className="p-1 rounded hover:bg-slate-100 transition-colors"
-          >
-            <Bookmark size={18} className={isSaved ? "text-blue-600 fill-current" : "text-gray-400"} />
-          </button>
-
           <button
             onClick={handleFavoriteClick}
             title={isFav ? "Unfavorite" : "Favorite"}
@@ -350,6 +341,16 @@ export function CandidateRow({
             className="p-1 rounded hover:bg-slate-100 transition-colors"
           >
             <Star size={18} className={isFav ? "text-yellow-400 fill-current" : "text-gray-400"} />
+          </button>
+
+          <button
+            onClick={() => setIsCallPopupOpen(true)}
+            className="hover:text-teal-500"
+            title="Schedule Call"
+            aria-haspopup="dialog"
+            aria-expanded={isCallPopupOpen}
+          >
+            <Phone size={18} />
           </button>
 
           <button
@@ -363,13 +364,12 @@ export function CandidateRow({
           </button>
 
           <button
-            onClick={() => setIsCallPopupOpen(true)}
-            className="hover:text-teal-500"
-            title="Schedule Call"
-            aria-haspopup="dialog"
-            aria-expanded={isCallPopupOpen}
+            onClick={handleSaveClick}
+            title={isSaved ? "Unsave" : "Save"}
+            aria-pressed={isSaved}
+            className="p-1 rounded hover:bg-slate-100 transition-colors"
           >
-            <Phone size={18} />
+            <Bookmark size={18} className={isSaved ? "text-blue-600 fill-current" : "text-gray-400"} />
           </button>
         </div>
       </div>

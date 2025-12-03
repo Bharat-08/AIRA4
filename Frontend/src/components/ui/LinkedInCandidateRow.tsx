@@ -179,14 +179,6 @@ export function LinkedInCandidateRow({
         {/* Actions (left-aligned inside the third column) */}
         <div className="flex items-center justify-start gap-3 text-gray-500 pl-1">
           <button
-            onClick={handleSaveClick} 
-            title={isSaved ? 'Unsave Candidate' : 'Save Candidate'} 
-            className="p-1 rounded hover:bg-slate-100 transition-colors"
-            aria-pressed={isSaved} 
-          >
-            <Bookmark size={18} className={isSaved ? 'text-blue-600' : 'text-gray-500'} /> 
-          </button>
-          <button
             onClick={handleFavoriteClick}
             title={isFav ? 'Unfavorite' : 'Favorite'}
             className="p-1 rounded hover:bg-slate-100 transition-colors"
@@ -194,6 +186,15 @@ export function LinkedInCandidateRow({
           >
             <Star size={18} className={isFav ? 'text-yellow-400' : 'text-gray-500'} />
           </button>
+          
+          <button
+            onClick={handleCallClick} 
+            title="Schedule Call"
+            className="p-1 rounded hover:bg-slate-100 transition-colors"
+          >
+            <Phone size={18} />
+          </button>
+
           <button
             onClick={handleRecommendClick} 
             title="Recommend"
@@ -201,12 +202,14 @@ export function LinkedInCandidateRow({
           >
             <Send size={18} />
           </button>
+
           <button
-            onClick={handleCallClick} 
-            title="Schedule Call"
+            onClick={handleSaveClick} 
+            title={isSaved ? 'Unsave Candidate' : 'Save Candidate'} 
             className="p-1 rounded hover:bg-slate-100 transition-colors"
+            aria-pressed={isSaved} 
           >
-            <Phone size={18} />
+            <Bookmark size={18} className={isSaved ? 'text-blue-600' : 'text-gray-500'} /> 
           </button>
         </div>
       </div>

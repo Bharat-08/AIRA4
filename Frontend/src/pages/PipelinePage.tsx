@@ -236,6 +236,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const [activeStatusFilter, setActiveStatusFilter] = useState<StatusFilter>('all');
   const [activeStageFilter, setActiveStageFilter] = useState<StageFilter>('all');
   const [showStageDropdown, setShowStageDropdown] = useState(false);
+  const [rolePipelineSearch, setRolePipelineSearch] = useState('');
 
   // Selection State
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -377,6 +378,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     setActiveStageFilter('all');
     setShowStageDropdown(false);
     setSelectedIds(new Set());
+    setRolePipelineSearch(''); // Reset search on JD change
 
     if (!newJdId) {
       setCandidates([]);
@@ -433,6 +435,17 @@ export const PipelinePage = ({ user }: { user: User }) => {
   // Filtered and Sorted Candidates
   const filteredCandidates = useMemo(() => {
     let tempCandidates = [...candidates];
+    
+    // Apply search filter for Role Pipeline
+    if (rolePipelineSearch.trim()) {
+        const query = rolePipelineSearch.toLowerCase();
+        tempCandidates = tempCandidates.filter(c => 
+            (c.profile_name || c.person_name || '').toLowerCase().includes(query) ||
+            (c.role || '').toLowerCase().includes(query) ||
+            (c.company || '').toLowerCase().includes(query)
+        );
+    }
+
     if (activeStatusFilter === 'favorite') {
       tempCandidates = tempCandidates.filter(c => c.favorite);
     } else if (activeStatusFilter === 'contacted') {
@@ -442,7 +455,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
       tempCandidates = tempCandidates.filter(c => c.stage === activeStageFilter);
     }
     return tempCandidates.sort(sortCandidatesAlpha);
-  }, [candidates, activeStatusFilter, activeStageFilter]);
+  }, [candidates, activeStatusFilter, activeStageFilter, rolePipelineSearch]);
 
   // Selection Handlers
   const handleSelectOne = (id: string) => {
@@ -466,7 +479,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const isAllSelected = filteredCandidates.length > 0 && 
                         filteredCandidates.every(c => c.rank_id && selectedIds.has(c.rank_id));
 
-  // Save Selected Logic
+  // Save Selected Logic (Preserved function in case reused later, but button removed)
   const handleSaveSelected = async () => {
     if (selectedIds.size === 0) return;
     setIsProcessingAction(true);
@@ -721,7 +734,21 @@ export const PipelinePage = ({ user }: { user: User }) => {
                 <div className="p-1 bg-cyan-50/60 rounded-lg">
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-800/50" size={18} />
-                    <input type="text" placeholder="Search candidates in this role" className="w-full pl-10 pr-4 py-2 border-none rounded-md text-sm bg-transparent focus:ring-2 focus:ring-teal-500 text-cyan-900 placeholder:text-cyan-800/50" />
+                    <input 
+                      type="text" 
+                      placeholder="Search candidates in this role"
+                      value={rolePipelineSearch}
+                      onChange={(e) => setRolePipelineSearch(e.target.value)}
+                      className="w-full pl-10 pr-10 py-2 border-none rounded-md text-sm bg-transparent focus:ring-2 focus:ring-teal-500 text-cyan-900 placeholder:text-cyan-800/50" 
+                    />
+                     {rolePipelineSearch && (
+                      <button 
+                        onClick={() => setRolePipelineSearch('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-cyan-800/50 hover:text-cyan-900"
+                      >
+                        <X size={16} />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -818,15 +845,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
               <div className="mt-6 flex items-center justify-between">
                 <div className="flex gap-2">
                   <button className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700">Contact Selected</button>
-                  
-                  <button 
-                    onClick={handleSaveSelected}
-                    disabled={selectedIds.size === 0 || isProcessingAction}
-                    className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isProcessingAction ? 'Saving...' : 'Save Selected for Future'}
-                  </button>
-                  
                   <button className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50">Remove Selected</button>
                 </div>
                 
