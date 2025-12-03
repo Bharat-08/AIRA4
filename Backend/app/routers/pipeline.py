@@ -1,3 +1,4 @@
+# Backend/app/routers/pipeline.py
 import logging
 import csv
 import io
@@ -6,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, UUID4
 from sqlalchemy.orm import Session
+from sqlalchemy import text, or_
 from app.db.session import get_db
 from app.dependencies import get_current_user, get_supabase_client
 from app.models.user import User
@@ -396,13 +398,14 @@ async def download_all_candidates_csv(
     favorite: Optional[bool] = Query(None),
     contacted: Optional[bool] = Query(None),
     save_for_future: Optional[bool] = Query(None),
-    recommended: Optional[bool] = Query(None),  # ✅ Added parameter
+    recommended: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),  # ✅ Added Search Param
     db: Session = Depends(get_db),
     supabase: Client = Depends(get_supabase_client),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Downloads all ranked candidates as CSV, applying optional filters.
+    Downloads all ranked candidates as CSV, applying optional filters AND search.
     """
     try:
         # 1. Build filters
@@ -424,13 +427,44 @@ async def download_all_candidates_csv(
             filters_resume.append(RankedCandidateFromResume.save_for_future.is_(save_for_future))
             filters_linkedin.append(LinkedIn.save_for_future.is_(save_for_future))
 
-        # ✅ NEW: Recommended filter
         if recommended is not None:
             filters_ranked.append(RankedCandidate.is_recommended.is_(recommended))
             filters_resume.append(RankedCandidateFromResume.is_recommended.is_(recommended))
             filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
 
-        # 2. Query local DB (Fetch ALL, no pagination)
+        # ✅ NEW: Apply Search Logic
+        if search:
+            search_term = f"%{search}%"
+            
+            # Search Web (Supabase)
+            web_filter = f"profile_name.ilike.{search_term},role.ilike.{search_term},company.ilike.{search_term}"
+            web_res = supabase.table("search").select("profile_id").or_(web_filter).execute()
+            web_ids = [x['profile_id'] for x in web_res.data] if web_res.data else []
+            
+            if web_ids:
+                filters_ranked.append(RankedCandidate.profile_id.in_(web_ids))
+            else:
+                filters_ranked.append(text("1=0"))
+
+            # Search Resume (Supabase)
+            # ✅ FIX: Changed 'organization' to 'company' to match schema
+            resume_filter = f"person_name.ilike.{search_term},company.ilike.{search_term}"
+            resume_res = supabase.table("resume").select("resume_id").or_(resume_filter).execute()
+            resume_ids = [x['resume_id'] for x in resume_res.data] if resume_res.data else []
+            
+            if resume_ids:
+                filters_resume.append(RankedCandidateFromResume.resume_id.in_(resume_ids))
+            else:
+                filters_resume.append(text("1=0"))
+
+            # Search LinkedIn (Local SQL)
+            filters_linkedin.append(or_(
+                LinkedIn.name.ilike(search_term),
+                LinkedIn.position.ilike(search_term),
+                LinkedIn.company.ilike(search_term)
+            ))
+
+        # 2. Query local DB
         ranked_rows = db.query(RankedCandidate).filter(*filters_ranked).all()
         resume_rows = db.query(RankedCandidateFromResume).filter(*filters_resume).all()
         
@@ -448,12 +482,11 @@ async def download_all_candidates_csv(
             
         all_rows.sort(key=get_sort_key, reverse=True)
 
-        # 4. Collect IDs
+        # 4. Collect IDs & Fetch Metadata
         profile_ids = [str(r.profile_id) for r in all_rows if isinstance(r, RankedCandidate) and r.profile_id]
         resume_ids = [str(r.resume_id) for r in all_rows if isinstance(r, RankedCandidateFromResume) and r.resume_id]
         jd_ids = list(set([str(r.jd_id) for r in all_rows if r.jd_id]))
 
-        # 5. Query Supabase (Added 'summary' to search query)
         profile_map = await fetch_in_batches(
             supabase_client=supabase,
             table_name="search",
@@ -462,11 +495,12 @@ async def download_all_candidates_csv(
             ids=profile_ids
         )
 
+        # ✅ FIX: Changed 'organization' to 'company'
         resume_map = await fetch_in_batches(
             supabase_client=supabase,
             table_name="resume",
             id_column="resume_id",
-            select_columns="resume_id, person_name, organization", # resume table doesn't strictly have summary usually, we stick to knowns
+            select_columns="resume_id, person_name, company",
             ids=resume_ids
         )
 
@@ -478,11 +512,9 @@ async def download_all_candidates_csv(
             ids=jd_ids
         )
         
-        # 6. Generate CSV
+        # 5. Generate CSV
         output = io.StringIO()
         writer = csv.writer(output)
-        
-        # Header
         writer.writerow([
             "Name", "Company", "Role", "Summary", 
             "Match Score", "Strengths", "Status", "JD Role", "LinkedIn URL", "Recommended"
@@ -490,16 +522,7 @@ async def download_all_candidates_csv(
 
         for r in all_rows:
             jd_name = jd_map.get(str(r.jd_id), {}).get("role") if r.jd_id else ""
-            
-            c_name = ""
-            c_company = ""
-            c_role = ""
-            c_summary = ""
-            c_score = ""
-            c_strengths = ""
-            c_status = "In Pipeline"
-            c_url = ""
-            c_rec = False
+            c_name, c_company, c_role, c_summary, c_score, c_strengths, c_status, c_url, c_rec = "", "", "", "", "", "", "In Pipeline", "", False
 
             if isinstance(r, RankedCandidate):
                 pdata = profile_map.get(str(r.profile_id), {}) if r.profile_id else {}
@@ -516,9 +539,8 @@ async def download_all_candidates_csv(
             elif isinstance(r, RankedCandidateFromResume):
                 rdata = resume_map.get(str(r.resume_id), {}) if r.resume_id else {}
                 c_name = rdata.get("person_name")
-                c_company = rdata.get("organization")
-                c_role = "" # Resume table might not have structured role easily available here without more queries
-                c_summary = ""
+                # ✅ FIX: Updated to get 'company'
+                c_company = rdata.get("company")
                 c_score = r.match_score
                 c_strengths = r.strengths
                 c_status = "Favourited" if r.favorite else ("Contacted" if r.contacted else "In Pipeline")
@@ -530,23 +552,13 @@ async def download_all_candidates_csv(
                 c_company = r.company
                 c_role = r.position
                 c_summary = r.summary
-                c_score = ""
-                c_strengths = ""
                 c_status = "Favourited" if r.favourite else "In Pipeline"
                 c_url = r.profile_link
                 c_rec = r.is_recommended
             
             writer.writerow([
-                c_name or "",
-                c_company or "",
-                c_role or "",
-                c_summary or "",
-                c_score or "",
-                c_strengths or "",
-                c_status,
-                jd_name,
-                c_url or "",
-                "Yes" if c_rec else "No"
+                c_name or "", c_company or "", c_role or "", c_summary or "",
+                c_score or "", c_strengths or "", c_status, jd_name, c_url or "", "Yes" if c_rec else "No"
             ])
 
         output.seek(0)
@@ -569,12 +581,13 @@ async def get_all_ranked_candidates(
     contacted: Optional[bool] = Query(None),
     save_for_future: Optional[bool] = Query(None),
     recommended: Optional[bool] = Query(None),  # ✅ Added parameter
+    search: Optional[str] = Query(None),  # ✅ Added Search Param
     db: Session = Depends(get_db),
     supabase: Client = Depends(get_supabase_client),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Fetch all ranked candidates with pagination.
+    Fetch all ranked candidates with pagination and SEARCH support.
     """
     try:
         # 1. Build filters
@@ -601,6 +614,40 @@ async def get_all_ranked_candidates(
             filters_ranked.append(RankedCandidate.is_recommended.is_(recommended))
             filters_resume.append(RankedCandidateFromResume.is_recommended.is_(recommended))
             filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
+
+        # ✅ NEW: Apply Search Logic (Supabase first, then SQL)
+        if search:
+            search_term = f"%{search}%"
+            
+            # 1. Search Web Profiles (Supabase)
+            # ILIKE on name, role, or company
+            web_filter = f"profile_name.ilike.{search_term},role.ilike.{search_term},company.ilike.{search_term}"
+            web_res = supabase.table("search").select("profile_id").or_(web_filter).execute()
+            web_ids = [x['profile_id'] for x in web_res.data] if web_res.data else []
+            
+            if web_ids:
+                filters_ranked.append(RankedCandidate.profile_id.in_(web_ids))
+            else:
+                filters_ranked.append(text("1=0")) # Force empty if no matches
+
+            # 2. Search Resumes (Supabase)
+            # ILIKE on person_name or company
+            # ✅ FIX: Changed 'organization' to 'company' to match Supabase schema
+            resume_filter = f"person_name.ilike.{search_term},company.ilike.{search_term}"
+            resume_res = supabase.table("resume").select("resume_id").or_(resume_filter).execute()
+            resume_ids = [x['resume_id'] for x in resume_res.data] if resume_res.data else []
+            
+            if resume_ids:
+                filters_resume.append(RankedCandidateFromResume.resume_id.in_(resume_ids))
+            else:
+                filters_resume.append(text("1=0")) # Force empty if no matches
+
+            # 3. Search LinkedIn (Local SQL)
+            filters_linkedin.append(or_(
+                LinkedIn.name.ilike(search_term),
+                LinkedIn.position.ilike(search_term),
+                LinkedIn.company.ilike(search_term)
+            ))
 
         # 2. Query local DB
         ranked_rows = db.query(RankedCandidate).filter(*filters_ranked).all()
@@ -627,7 +674,7 @@ async def get_all_ranked_candidates(
         paginated_rows = all_rows[start:end]
         has_more = end < total
 
-        # 5. Collect IDs
+        # 5. Collect IDs & Fetch Metadata
         profile_ids = [str(r.profile_id) for r in paginated_rows if isinstance(r, RankedCandidate) and r.profile_id]
         resume_ids = [str(r.resume_id) for r in paginated_rows if isinstance(r, RankedCandidateFromResume) and r.resume_id]
         jd_ids = list(set([str(r.jd_id) for r in paginated_rows if r.jd_id]))
@@ -641,11 +688,12 @@ async def get_all_ranked_candidates(
             ids=profile_ids
         )
 
+        # ✅ FIX: Changed 'organization' to 'company'
         resume_map = await fetch_in_batches(
             supabase_client=supabase,
             table_name="resume",
             id_column="resume_id",
-            select_columns="resume_id, person_name, organization",
+            select_columns="resume_id, person_name, company",
             ids=resume_ids
         )
 
@@ -705,7 +753,8 @@ async def get_all_ranked_candidates(
                         source="ranked_candidates_from_resume",
                         profile_name=rdata.get("person_name") or None,
                         role=None, 
-                        company=rdata.get("organization") or None,
+                        # ✅ FIX: Updated to get 'company'
+                        company=rdata.get("company") or None,
                         # summary not mapped for resume
                         jd_name=jd_name,
                         is_recommended=bool(r.is_recommended), # ✅ Added

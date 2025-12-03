@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Header } from '../components/layout/Header';
-import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download, Loader2 } from 'lucide-react';
+import { Search, ChevronDown, Link, Star, Send, Phone, Trash2, ArrowRight, Download, Loader2, X } from 'lucide-react';
 import type { User } from '../types/user';
 
 // --- API & TYPE IMPORTS ---
@@ -252,6 +252,10 @@ export const PipelinePage = ({ user }: { user: User }) => {
     save_for_future?: boolean;
     recommended?: boolean;
   }>({});
+  
+  // ✅ NEW: Search State for All Candidates
+  const [allCandidatesSearch, setAllCandidatesSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   // Popup State
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
@@ -272,7 +276,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     hasMoreAllCandidates
   );
 
-  // --- HELPER: Broadcast Update (Sends multiple IDs to ensure sync) ---
+  // --- HELPER: Broadcast Update ---
   const broadcastUpdate = (
     candidate: Candidate | PipelineDisplayCandidate, 
     type: 'FAVORITE_UPDATED' | 'SAVE_UPDATED', 
@@ -280,16 +284,13 @@ export const PipelinePage = ({ user }: { user: User }) => {
   ) => {
     const channel = new BroadcastChannel('candidate_sync_channel');
     
-    // We gather ALL IDs associated with this candidate.
-    // This is crucial because SearchPage might be indexed by profile_id while Pipeline is by rank_id.
     const ids = [
         candidate.rank_id,
         candidate.profile_id,
         (candidate as any).resume_id,
         (candidate as any).linkedin_profile_id
-    ].filter(id => id); // Remove null/undefined
+    ].filter(id => id); 
 
-    // Broadcast a message for EACH ID so any listener tracking that ID catches it.
     ids.forEach(id => {
         channel.postMessage({ 
             type, 
@@ -307,14 +308,11 @@ export const PipelinePage = ({ user }: { user: User }) => {
     const channel = new BroadcastChannel('candidate_sync_channel');
 
     channel.onmessage = (event) => {
-      // Ignore messages from self
       if (event.data?.sourceTabId === tabId) return;
 
       const { type, candidateId, value } = event.data;
 
-      // Update function
       const updateList = (list: any[]) => list.map(c => {
-        // Check if ANY of the candidate's IDs match the incoming ID
         const isMatch = (c.rank_id && c.rank_id === candidateId) ||
                         (c.profile_id && c.profile_id === candidateId) || 
                         (c.resume_id && c.resume_id === candidateId) || 
@@ -331,7 +329,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
         setCandidates(prev => updateList(prev) as PipelineDisplayCandidate[]);
         setAllCandidatesList(prev => updateList(prev));
         
-        // Update selected candidate popup if open
         if (selectedCandidate) {
            const c = selectedCandidate;
            const isMatch = (c.rank_id === candidateId) || (c.profile_id === candidateId) || ((c as any).resume_id === candidateId);
@@ -346,14 +343,10 @@ export const PipelinePage = ({ user }: { user: User }) => {
     return () => channel.close();
   }, [tabId, selectedCandidate]);
 
-  // Load JDs and default JD pipeline candidates
+  // Load JDs
   useEffect(() => {
     const loadJdsAndCandidates = async () => {
       setIsLoading(true);
-      setActiveStatusFilter('all');
-      setActiveStageFilter('all');
-      setShowStageDropdown(false);
-      setSelectedIds(new Set());
       try {
         const jds = await fetchJdsForUser();
         setUserJds(jds);
@@ -361,18 +354,14 @@ export const PipelinePage = ({ user }: { user: User }) => {
         if (jds.length > 0) {
           const defaultJdId = jds[0].jd_id;
           setSelectedJdId(defaultJdId);
-
           const fetchedCandidates = await getRankedCandidatesForJd(defaultJdId);
           setCandidates(fetchedCandidates.map(c => ({
             ...c,
             stage: (c.stage as CandidateStage) || 'In Consideration',
           })));
-        } else {
-          setCandidates([]);
         }
       } catch (error) {
         console.error("Failed to load pipeline data", error);
-        setCandidates([]);
       } finally {
         setIsLoading(false);
       }
@@ -426,20 +415,14 @@ export const PipelinePage = ({ user }: { user: User }) => {
     const oldFavorite = candidate.favorite;
     const newFavorite = !oldFavorite;
     
-    // 1. Optimistic Update
     setCandidates(prev => prev.map(c => c.rank_id === rankId ? { ...c, favorite: newFavorite } : c));
-
-    // 2. Broadcast to Other Tabs
     broadcastUpdate(candidate, 'FAVORITE_UPDATED', newFavorite);
 
-    // 3. API Call
     try {
       await updateCandidateFavoriteStatus(rankId, newFavorite);
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
-      // Revert on failure
       setCandidates(prev => prev.map(c => c.rank_id === rankId ? { ...c, favorite: oldFavorite } : c));
-      // Revert broadcast (optional, but good practice)
       broadcastUpdate(candidate, 'FAVORITE_UPDATED', oldFavorite);
     }
   };
@@ -490,12 +473,10 @@ export const PipelinePage = ({ user }: { user: User }) => {
     
     const idsToSave = Array.from(selectedIds);
 
-    // 1. Optimistic Update
     setCandidates(prev => prev.map(c => 
       c.rank_id && selectedIds.has(c.rank_id) ? { ...c, save_for_future: true } : c
     ));
 
-    // 2. Broadcast for each selected candidate
     idsToSave.forEach(id => {
       const candidate = candidates.find(c => c.rank_id === id);
       if (candidate) {
@@ -503,7 +484,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
       }
     });
 
-    // 3. API Call
     try {
       await Promise.all(idsToSave.map(id => updateCandidateSaveStatus(id, true)));
       setSelectedIds(new Set());
@@ -514,7 +494,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   };
 
-  // Handler: Search More Candidates
   const handleSearchMore = () => {
     if (selectedJdId) {
       window.open(`/search?jd_id=${selectedJdId}`, '_blank');
@@ -533,7 +512,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }`;
   };
 
-  // Download Handlers
   const handleDownloadJdPipeline = async () => {
     if (!selectedJdId) return;
     try {
@@ -562,8 +540,26 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   };
 
+  // ✅ DEBOUNCE EFFECT: Set debounced search after 500ms
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(allCandidatesSearch);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [allCandidatesSearch]);
+
+  // ✅ RESET EFFECT: Reset list and page when filters or search change
+  useEffect(() => {
+    if (activeTab === 'allCandidates') {
+        setAllCandidatesList([]); // Clear current list to avoid mixing results
+        setAllCandidatesPage(1);  // Reset to page 1
+    }
+  }, [allCandidatesFilters, debouncedSearch, activeTab]);
+
+  // ✅ FETCH EFFECT: Triggered by Page Change (or reset above)
   useEffect(() => {
     if (activeTab !== 'allCandidates') return;
+
     const loadAllCandidates = async () => {
       setIsAllCandidatesLoading(true);
       try {
@@ -572,6 +568,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
           contacted: allCandidatesFilters.contacted,
           save_for_future: allCandidatesFilters.save_for_future,
           recommended: allCandidatesFilters.recommended,
+          search: debouncedSearch // ✅ Pass search term
         });
 
         if (allCandidatesPage === 1) {
@@ -587,7 +584,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
       }
     };
     loadAllCandidates();
-  }, [activeTab, allCandidatesPage, allCandidatesFilters]);
+  }, [activeTab, allCandidatesPage, allCandidatesFilters, debouncedSearch]); // Depend on debouncedSearch
 
   const handleAllFilterChange = (filterKey: keyof typeof allCandidatesFilters, value: boolean | undefined) => {
     setAllCandidatesFilters(prev => {
@@ -596,10 +593,9 @@ export const PipelinePage = ({ user }: { user: User }) => {
       else newFilters[filterKey] = value;
       return newFilters;
     });
-    setAllCandidatesPage(1);
+    // Reset handled by effect
   };
 
-  // Popup Handlers
   const getCandidateId = (c: Candidate) => c.rank_id || c.profile_id || c.resume_id || '';
 
   const handleUpdateCandidate = (updated: Candidate) => {
@@ -616,22 +612,18 @@ export const PipelinePage = ({ user }: { user: User }) => {
   };
 
   const handlePopupFavorite = async (candidateId: string, source: any, newFavorite: boolean) => {
-    // 1. Local update
     if (selectedCandidate) {
       handleUpdateCandidate({ ...selectedCandidate, favorite: newFavorite });
     }
     
-    // 2. Broadcast (Using helper to ensure all IDs sent)
     if (selectedCandidate) {
        broadcastUpdate(selectedCandidate, 'FAVORITE_UPDATED', newFavorite);
     } else {
-       // Fallback if no full object, send just the ID we have
        const channel = new BroadcastChannel('candidate_sync_channel');
        channel.postMessage({ type: 'FAVORITE_UPDATED', candidateId, value: newFavorite, sourceTabId: tabId });
        channel.close();
     }
 
-    // 3. API
     try {
       await toggleFavorite(candidateId, source, newFavorite);
     } catch (err) {
@@ -644,12 +636,10 @@ export const PipelinePage = ({ user }: { user: User }) => {
   };
 
   const handlePopupSave = async (candidateId: string, source: any, newSave: boolean) => {
-    // 1. Local
     if (selectedCandidate) {
       handleUpdateCandidate({ ...selectedCandidate, save_for_future: newSave });
     }
 
-    // 2. Broadcast
     if (selectedCandidate) {
        broadcastUpdate(selectedCandidate, 'SAVE_UPDATED', newSave);
     } else {
@@ -658,7 +648,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
        channel.close();
     }
 
-    // 3. API
     try {
       await toggleSave(candidateId, source, newSave);
     } catch (err) {
@@ -701,6 +690,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
 
           {activeTab === 'rolePipeline' ? (
             <>
+              {/* Role Pipeline Content (Unchanged) */}
               <div className="mb-6 flex justify-between items-center gap-4">
                 <select
                   value={selectedJdId}
@@ -731,7 +721,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
                 <div className="p-1 bg-cyan-50/60 rounded-lg">
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-800/50" size={18} />
-                    <input type="text" placeholder="Search candidates" className="w-full pl-10 pr-4 py-2 border-none rounded-md text-sm bg-transparent focus:ring-2 focus:ring-teal-500 text-cyan-900 placeholder:text-cyan-800/50" />
+                    <input type="text" placeholder="Search candidates in this role" className="w-full pl-10 pr-4 py-2 border-none rounded-md text-sm bg-transparent focus:ring-2 focus:ring-teal-500 text-cyan-900 placeholder:text-cyan-800/50" />
                   </div>
                 </div>
               </div>
@@ -855,11 +845,22 @@ export const PipelinePage = ({ user }: { user: User }) => {
               <div className="mb-4 flex justify-between items-center gap-4">
                  <div className="relative flex-grow">
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  {/* ✅ UPDATED Search Input */}
                   <input
                     type="text"
-                    placeholder="Search candidates"
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 text-slate-900 placeholder:text-slate-500"
+                    value={allCandidatesSearch}
+                    onChange={(e) => setAllCandidatesSearch(e.target.value)}
+                    placeholder="Search all candidates (DB Search)"
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-100 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 text-slate-900 placeholder:text-slate-500"
                   />
+                  {allCandidatesSearch && (
+                    <button 
+                        onClick={() => setAllCandidatesSearch('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                        <X size={16} />
+                    </button>
+                  )}
                 </div>
                 <button 
                   onClick={handleDownloadAllCandidates}
@@ -874,7 +875,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
               <div className="flex items-center gap-2 border-b border-slate-200 pb-3 mb-3 text-sm">
                 <button
                   className="px-3 py-1.5 rounded-md bg-slate-100 font-semibold text-slate-800"
-                  onClick={() => { setAllCandidatesFilters({}); setAllCandidatesPage(1); }}
+                  onClick={() => { setAllCandidatesFilters({}); setAllCandidatesPage(1); setAllCandidatesSearch(''); }}
                 >
                   All
                 </button>

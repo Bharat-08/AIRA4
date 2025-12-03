@@ -30,17 +30,23 @@ export const getRankedCandidatesForJd = async (jd_id: string): Promise<Candidate
 
 /**
  * Fetches ALL ranked candidates (both JD and resume-sourced) for the current user.
- * Supports pagination and filters for favorite, contacted, save_for_future, and recommended.
+ * Supports pagination and filters for favorite, contacted, save_for_future, recommended, AND search.
  *
  * @param page - Page number (1-indexed)
  * @param limit - Number of candidates per page
- * @param filters - Optional filters: { favorite?: boolean, contacted?: boolean, save_for_future?: boolean, recommended?: boolean }
+ * @param filters - Optional filters: { favorite, contacted, save_for_future, recommended, search }
  * @returns { items, page, limit, total, has_more }
  */
 export const getAllRankedCandidates = async (
   page: number = 1,
   limit: number = 20,
-  filters: { favorite?: boolean; contacted?: boolean; save_for_future?: boolean; recommended?: boolean } = {}
+  filters: { 
+    favorite?: boolean; 
+    contacted?: boolean; 
+    save_for_future?: boolean; 
+    recommended?: boolean;
+    search?: string; // ✅ Added search parameter
+  } = {}
 ): Promise<{
   items: Candidate[];
   page: number;
@@ -62,9 +68,13 @@ export const getAllRankedCandidates = async (
   if (filters.save_for_future !== undefined) {
     params.append('save_for_future', String(filters.save_for_future));
   }
-  // ✅ NEW: Handle recommended filter
   if (filters.recommended !== undefined) {
     params.append('recommended', String(filters.recommended));
+  }
+  
+  // ✅ NEW: Handle search query
+  if (filters.search) {
+    params.append('search', filters.search);
   }
 
   const res = await fetch(`/api/pipeline/all/?${params.toString()}`, {
