@@ -198,10 +198,11 @@ export const recommendCandidate = async (
 
 /**
  * Triggers a CSV download for the specific JD pipeline, respecting filters.
+ * ✅ UPDATED: Added search parameter support to match the UI filter
  */
 export const downloadJdPipeline = async (
   jd_id: string,
-  filters: { stage?: string; favorite?: boolean; contacted?: boolean } = {}
+  filters: { stage?: string; favorite?: boolean; contacted?: boolean; search?: string } = {}
 ): Promise<void> => {
   if (!jd_id) return;
 
@@ -209,6 +210,8 @@ export const downloadJdPipeline = async (
   if (filters.stage && filters.stage !== 'all') params.append('stage', filters.stage);
   if (filters.favorite) params.append('favorite', 'true');
   if (filters.contacted) params.append('contacted', 'true');
+  // ✅ NEW: Pass search term to download endpoint
+  if (filters.search) params.append('search', filters.search);
 
   const res = await fetch(`/api/pipeline/${encodeURIComponent(jd_id)}/download?${params.toString()}`, {
     credentials: 'include',

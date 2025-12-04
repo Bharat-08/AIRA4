@@ -37,7 +37,7 @@ import CandidatePopupCard from '../components/ui/CandidatePopupCard';
 type PipelineDisplayCandidate = Candidate & { stage: CandidateStage };
 
 // --- Filter Types ---
-type StatusFilter = 'all' | 'favorite' | 'contacted';
+// ✅ UPDATED: Removed string-based StatusFilter, logic moved to boolean state object
 type StageFilter = 'all' | CandidateStage;
 
 // --- Helper for Sorting ---
@@ -232,8 +232,12 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const [userJds, setUserJds] = useState<JdSummary[]>([]);
   const [selectedJdId, setSelectedJdId] = useState<string>('');
 
-  // Filters for role pipeline
-  const [activeStatusFilter, setActiveStatusFilter] = useState<StatusFilter>('all');
+  // ✅ UPDATED: Role Pipeline Filters (now supports multiple selections)
+  const [rolePipelineFilters, setRolePipelineFilters] = useState<{
+    favorite: boolean;
+    contacted: boolean;
+  }>({ favorite: false, contacted: false });
+  
   const [activeStageFilter, setActiveStageFilter] = useState<StageFilter>('all');
   const [showStageDropdown, setShowStageDropdown] = useState(false);
   const [rolePipelineSearch, setRolePipelineSearch] = useState('');
@@ -254,7 +258,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     recommended?: boolean;
   }>({});
   
-  // ✅ NEW: Search State for All Candidates
+  // All Candidates Search State
   const [allCandidatesSearch, setAllCandidatesSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
@@ -374,7 +378,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const handleJdSelectionChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newJdId = e.target.value;
     setSelectedJdId(newJdId);
-    setActiveStatusFilter('all');
+    setRolePipelineFilters({ favorite: false, contacted: false }); // Reset filters
     setActiveStageFilter('all');
     setShowStageDropdown(false);
     setSelectedIds(new Set());
@@ -432,7 +436,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const favoritedCount = useMemo(() => candidates.filter(c => c.favorite).length, [candidates]);
   const contactedCount = useMemo(() => candidates.filter(c => c.contacted).length, [candidates]);
 
-  // Filtered and Sorted Candidates
+  // ✅ UPDATED: Filtered and Sorted Candidates with Multi-Select Logic
   const filteredCandidates = useMemo(() => {
     let tempCandidates = [...candidates];
     
@@ -446,16 +450,19 @@ export const PipelinePage = ({ user }: { user: User }) => {
         );
     }
 
-    if (activeStatusFilter === 'favorite') {
+    // Apply multiple filters (AND logic)
+    if (rolePipelineFilters.favorite) {
       tempCandidates = tempCandidates.filter(c => c.favorite);
-    } else if (activeStatusFilter === 'contacted') {
+    }
+    if (rolePipelineFilters.contacted) {
       tempCandidates = tempCandidates.filter(c => c.contacted);
     }
+    
     if (activeStageFilter !== 'all') {
       tempCandidates = tempCandidates.filter(c => c.stage === activeStageFilter);
     }
     return tempCandidates.sort(sortCandidatesAlpha);
-  }, [candidates, activeStatusFilter, activeStageFilter, rolePipelineSearch]);
+  }, [candidates, rolePipelineFilters, activeStageFilter, rolePipelineSearch]);
 
   // Selection Handlers
   const handleSelectOne = (id: string) => {
@@ -525,13 +532,15 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }`;
   };
 
+  // ✅ UPDATED: Handle Download Jd Pipeline to include all active filters AND search
   const handleDownloadJdPipeline = async () => {
     if (!selectedJdId) return;
     try {
       await downloadJdPipeline(selectedJdId, {
         stage: activeStageFilter,
-        favorite: activeStatusFilter === 'favorite',
-        contacted: activeStatusFilter === 'contacted'
+        favorite: rolePipelineFilters.favorite,
+        contacted: rolePipelineFilters.contacted,
+        search: rolePipelineSearch // Added search param
       });
     } catch (err) {
       console.error("Download failed", err);
@@ -753,22 +762,23 @@ export const PipelinePage = ({ user }: { user: User }) => {
                 </div>
               </div>
 
+              {/* ✅ UPDATED: Filter Buttons Logic */}
               <div className="flex items-center gap-2 border-b border-slate-200 pb-3 mb-3 text-sm">
                 <button
-                  className={getFilterButtonClass(activeStatusFilter === 'all')}
-                  onClick={() => { setActiveStatusFilter('all'); }}
+                  className={getFilterButtonClass(!rolePipelineFilters.favorite && !rolePipelineFilters.contacted)}
+                  onClick={() => { setRolePipelineFilters({ favorite: false, contacted: false }); }}
                 >
                   All
                 </button>
                 <button
-                  className={getFilterButtonClass(activeStatusFilter === 'favorite')}
-                  onClick={() => { setActiveStatusFilter('favorite'); }}
+                  className={getFilterButtonClass(rolePipelineFilters.favorite)}
+                  onClick={() => { setRolePipelineFilters(prev => ({ ...prev, favorite: !prev.favorite })); }}
                 >
                   Favourited ({favoritedCount})
                 </button>
                 <button
-                  className={getFilterButtonClass(activeStatusFilter === 'contacted')}
-                  onClick={() => { setActiveStatusFilter('contacted'); }}
+                  className={getFilterButtonClass(rolePipelineFilters.contacted)}
+                  onClick={() => { setRolePipelineFilters(prev => ({ ...prev, contacted: !prev.contacted })); }}
                 >
                   Contacted ({contactedCount})
                 </button>
