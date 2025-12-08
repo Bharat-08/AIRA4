@@ -1095,7 +1095,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
                 >
                   Saved for future
                 </button>
-                <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Recommended to you</button>
+                {/* <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Recommended to you</button> */}
                 
                 {/* ✅ UPDATED BUTTON: "Recommended to you" is now clickable */}
                 <button 
