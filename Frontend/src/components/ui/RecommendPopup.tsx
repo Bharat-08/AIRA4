@@ -6,11 +6,18 @@ export interface JdOption {
   role?: string | null;
 }
 
+// ✅ NEW: Interface for Teammates
+export interface TeammateOption {
+  user_id: string; // or id
+  name: string;
+}
+
 interface RecommendPopupProps {
   isOpen: boolean;
   onClose: () => void;
   onSend: (type: "role" | "team", selection: string) => void;
   jds?: JdOption[];
+  teammates?: TeammateOption[]; // ✅ Added teammates prop
 }
 
 export default function RecommendPopup({
@@ -18,6 +25,7 @@ export default function RecommendPopup({
   onClose,
   onSend,
   jds = [],
+  teammates = [], // ✅ Default to empty array
 }: RecommendPopupProps) {
   const [activeTab, setActiveTab] = useState<"role" | "team">("role");
   const [selection, setSelection] = useState("");
@@ -116,11 +124,16 @@ export default function RecommendPopup({
                   <option disabled>No roles available</option>
                 )
               ) : (
-                <>
-                  {/* Hardcoded teammates for now */}
-                  <option value="teammate1">Teammate 1</option>
-                  <option value="teammate2">Teammate 2</option>
-                </>
+                // ✅ UPDATED: Dynamic Teammates List
+                teammates.length > 0 ? (
+                  teammates.map((tm) => (
+                    <option key={tm.user_id} value={tm.user_id}>
+                      {tm.name}
+                    </option>
+                  ))
+                ) : (
+                  <option disabled>No teammates found</option>
+                )
               )}
             </select>
           </div>

@@ -1,6 +1,6 @@
 // Frontend/src/api/pipeline.ts
 import type { Candidate } from '../types/candidate';
-import { toggleFavorite, toggleSave } from './search'; // ✅ Updated import to include toggleSave
+import { toggleFavorite, toggleSave } from './search'; 
 
 /**
  * Fetches the ranked candidate pipeline for a specific JD.
@@ -34,7 +34,7 @@ export const getRankedCandidatesForJd = async (jd_id: string): Promise<Candidate
  *
  * @param page - Page number (1-indexed)
  * @param limit - Number of candidates per page
- * @param filters - Optional filters: { favorite, contacted, save_for_future, recommended, search }
+ * @param filters - Optional filters
  * @returns { items, page, limit, total, has_more }
  */
 export const getAllRankedCandidates = async (
@@ -45,7 +45,8 @@ export const getAllRankedCandidates = async (
     contacted?: boolean; 
     save_for_future?: boolean; 
     recommended?: boolean;
-    search?: string; // ✅ Added search parameter
+    recommended_to_me?: boolean; // ✅ Added support for "Recommended to me"
+    search?: string; 
   } = {}
 ): Promise<{
   items: Candidate[];
@@ -70,6 +71,10 @@ export const getAllRankedCandidates = async (
   }
   if (filters.recommended !== undefined) {
     params.append('recommended', String(filters.recommended));
+  }
+  // ✅ NEW: Handle recommended_to_me filter
+  if (filters.recommended_to_me !== undefined) {
+    params.append('recommended_to_me', String(filters.recommended_to_me));
   }
   
   // ✅ NEW: Handle search query
@@ -193,6 +198,34 @@ export const recommendCandidate = async (
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Failed to recommend candidate (${res.status})`);
+  }
+};
+
+/**
+ * ✅ NEW: Recommend a candidate to a specific Teammate (User).
+ * This sends the recommendation to another user in the same organization.
+ * * @param candidateId - The ID of the candidate
+ * @param targetUserId - The ID of the user to recommend to
+ */
+export const recommendToTeammate = async (
+  candidateId: string,
+  targetUserId: string
+): Promise<void> => {
+  const res = await fetch(`/api/pipeline/recommend-to-user`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      candidate_id: candidateId,
+      target_user_id: targetUserId,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to send recommendation to teammate (${res.status})`);
   }
 };
 

@@ -11,9 +11,10 @@ import {
 import type { Candidate } from "../../types/candidate";
 import { generateLinkedInUrl } from "../../api/search";
 import CallSchedulePopup from "./CallSchedulePopup";
-import RecommendPopup from "./RecommendPopup";
-// ✅ Import API and Types
-import { recommendCandidate } from "../../api/pipeline";
+// ✅ Updated Import to include TeammateOption
+import RecommendPopup, { type TeammateOption } from "./RecommendPopup";
+// ✅ Updated Import to include recommendToTeammate
+import { recommendCandidate, recommendToTeammate } from "../../api/pipeline";
 import type { JdSummary } from "../../api/roles";
 
 interface CandidateRowProps {
@@ -31,8 +32,9 @@ interface CandidateRowProps {
     save_for_future: boolean
   ) => Promise<void> | void;
   source?: "ranked_candidates" | "ranked_candidates_from_resume";
-  // ✅ NEW: List of User JDs for recommendation
   userJds?: JdSummary[];
+  // ✅ NEW: Added teammates prop to fix the TypeScript error
+  teammates?: TeammateOption[];
 }
 
 export function CandidateRow({
@@ -42,7 +44,8 @@ export function CandidateRow({
   onToggleFavorite,
   onToggleSave,
   source = "ranked_candidates",
-  userJds = [], // Default to empty
+  userJds = [], 
+  teammates = [], // ✅ Default to empty array
 }: CandidateRowProps) {
   const [isGeneratingUrl, setIsGeneratingUrl] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,34 +73,34 @@ export function CandidateRow({
 
   // ---- Robust display fields ----
   const displayName =
-    candidate.profile_name || // from 'search' table
-    candidate.person_name || // from 'resume' table
+    candidate.profile_name || 
+    candidate.person_name || 
     candidate.name ||
     candidate.full_name ||
     "—";
 
   const displayRole =
-    candidate.role || // from 'search' OR 'resume'
+    candidate.role || 
     candidate.current_title ||
     candidate.title ||
     "—";
 
   const displayCompany =
-    candidate.company || // from 'search' OR 'resume'
+    candidate.company || 
     candidate.current_company ||
     candidate.organization_name ||
     candidate.organization ||
     "—";
 
   const profileId =
-    candidate.profile_id || // from 'search' table
-    candidate.resume_id || // from 'resume' table
-    (candidate as any).id || // Keep this as a final fallback
+    candidate.profile_id || 
+    candidate.resume_id || 
+    (candidate as any).id || 
     "";
 
   // profileUrl should NOT fall back to linkedin_url
   const profileUrl =
-    candidate.profile_url || // from 'search' OR 'resume'
+    candidate.profile_url || 
     (candidate as any).validated_url ||
     "";
 
@@ -124,16 +127,10 @@ export function CandidateRow({
       const newUrl = result.linkedin_url;
       if (!newUrl) throw new Error("API did not return a valid URL.");
 
-      // Open the new URL
       window.open(newUrl, "_blank", "noopener,noreferrer");
-
-      // Save to local state so the UI updates
       setGeneratedUrl(newUrl);
-
-      // Update the parent component's state
       onUpdateCandidate({ ...(candidate as any), linkedin_url: newUrl } as Candidate);
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error("Failed to generate LinkedIn URL:", err);
       setError("Failed to find URL.");
     } finally {
@@ -172,7 +169,6 @@ export function CandidateRow({
   };
 
   const handleSendFromCallPopup = (message: string, channel?: "whatsapp" | "email") => {
-    // eslint-disable-next-line no-console
     console.info(`Sending message to ${displayName} via ${channel}:`, message);
     try {
       onUpdateCandidate({
@@ -183,23 +179,30 @@ export function CandidateRow({
     setIsCallPopupOpen(false);
   };
 
-  // ✅ UPDATED: Handle recommendation to role via API
+  // ✅ UPDATED: Handle recommendation to role AND team via API
   const handleRecommendSend = async (type: "role" | "team", selection: string) => {
+    // Prefer rank_id if available, otherwise profileId
+    const idToSend = candidate.rank_id || String(profileId);
+
     if (type === "role") {
       try {
-        // Use rank_id if available (preferred for DB updates), else profileId
-        const idToSend = candidate.rank_id || String(profileId);
-        
-        // Call API to create/update recommendation
         await recommendCandidate(idToSend, source, selection);
-        
         console.info(`Successfully recommended ${displayName} to role ${selection}`);
+        alert('Candidate recommended successfully!');
       } catch (err) {
         console.error("Failed to recommend to role", err);
-        // Optional: Trigger a toast error here
+        alert('Failed to recommend candidate.');
       }
     } else {
-        console.info(`Recommended ${displayName} to team: ${selection}`);
+        // ✅ Call the actual backend API for teammates
+        try {
+            await recommendToTeammate(idToSend, selection);
+            console.info(`Recommended ${displayName} to team: ${selection}`);
+            alert(`Recommendation successfully sent to teammate!`);
+        } catch (err) {
+            console.error("Failed to recommend to teammate", err);
+            alert('Failed to send recommendation. Please check your network connection.');
+        }
     }
 
     // Update local state/timestamp
@@ -217,7 +220,6 @@ export function CandidateRow({
     e.preventDefault();
     e.stopPropagation();
 
-    // Determine correct ID
     let idToSend = String(profileId);
     
     if (source === 'ranked_candidates' || source === 'ranked_candidates_from_resume') {
@@ -238,7 +240,6 @@ export function CandidateRow({
       onUpdateCandidate({ ...(candidate as any), favorite: newVal } as Candidate);
     } catch (err) {
       setIsFav(!newVal); // Revert on error
-      // eslint-disable-next-line no-console
       console.warn("Failed to toggle favorite", err);
     }
   };
@@ -281,7 +282,6 @@ export function CandidateRow({
       // revert UI and parent state
       setIsSaved(!newSaved);
       onUpdateCandidate({ ...(candidate as any), save_for_future: !newSaved } as Candidate);
-      // eslint-disable-next-line no-console
       console.warn("Failed to toggle save_for_future", err);
     }
   };
@@ -388,7 +388,9 @@ export function CandidateRow({
         isOpen={isRecommendPopupOpen}
         onClose={() => setIsRecommendPopupOpen(false)}
         onSend={(type, selection) => handleRecommendSend(type, selection)}
-        jds={userJds} // ✅ Pass available JDs to popup
+        jds={userJds}
+        // ✅ NEW: Passing teammates prop
+        teammates={teammates} 
       />
     </>
   );

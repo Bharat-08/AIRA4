@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.db.session import get_db
-from app.security.deps import require_admin
+from app.security.deps import require_admin, get_current_user  # ✅ Added get_current_user
 from app.models.invitation import Invitation
 from app.models.user import User
 from app.models.membership import Membership
@@ -113,4 +113,33 @@ def list_org_users(ctx=Depends(require_admin), db: Session = Depends(get_db)):
             "name": user.name,
             "role": membership.role
         } for user, membership in members
+    ]
+
+# ✅ NEW ENDPOINT: Get Teammates (for regular users)
+@router.get("/teammates")
+def get_teammates(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetches other users in the same organization as the current user.
+    Used for recommending candidates to teammates.
+    """
+    if not current_user.organization_id:
+        return []
+
+    # Fetch users with same org_id, excluding the current user
+    teammates = db.execute(
+        select(User)
+        .where(User.organization_id == current_user.organization_id)
+        .where(User.id != current_user.id)
+    ).scalars().all()
+
+    return [
+        {
+            "id": str(t.id),
+            "name": t.name,
+            "email": t.email,
+            "avatar_url": t.avatar_url
+        } for t in teammates
     ]

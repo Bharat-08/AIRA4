@@ -8,6 +8,8 @@ from .routers import auth, health, me, orgs, superadmin, favorites, upload, role
 from app.routers import pipeline
 from app.routers import candidates
 from app.routers import dashboard
+# ✅ 1. Import users router
+from app.routers import users
 
 app = FastAPI(
     title="Recruiter Platform API",
@@ -42,15 +44,14 @@ app.include_router(auth.router)
 app.include_router(me.router)
 app.include_router(upload.router)
 app.include_router(orgs.router)
+
+# ✅ 2. Register users router (Safe now that imports are fixed)
+app.include_router(users.router)
+
 app.include_router(superadmin.router, prefix="/superadmin", tags=["Super Admin"])
 app.include_router(favorites.router, tags=["Favorites"])
 app.include_router(search.router, prefix="/search", tags=["Search"])
 app.include_router(roles.router, prefix="/roles", tags=["Roles"])
 app.include_router(pipeline.router)
 app.include_router(dashboard.router)
-
-# --- ADDED CANDIDATE ROUTER ---
-# This line activates the new endpoints in app/routers/candidates.py
-# The prefix="/candidates" and tags=["Candidates"] are already set in that file.
 app.include_router(candidates.router)
-# --- END OF ADD ---

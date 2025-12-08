@@ -14,22 +14,25 @@ import {
   updateCandidateSaveStatus,
   downloadJdPipeline,
   downloadAllCandidates,
+  recommendCandidate,
+  recommendToTeammate, // ✅ Added import
 } from '../api/pipeline';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
+import { getTeammates } from '../api/users'; 
 import {
   candidateStages,
   type Candidate,
   type CandidateStage,
 } from '../types/candidate';
 
-// --- SEARCH API IMPORTS (For Popup Actions) ---
+// --- SEARCH API IMPORTS ---
 import { toggleFavorite, toggleSave } from '../api/search';
 
 // --- HOOK IMPORTS ---
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 
 // --- POPUP IMPORTS ---
-import RecommendPopup from '../components/ui/RecommendPopup';
+import RecommendPopup, { type TeammateOption } from '../components/ui/RecommendPopup'; 
 import CallSchedulePopup from '../components/ui/CallSchedulePopup';
 import CandidatePopupCard from '../components/ui/CandidatePopupCard';
 
@@ -37,7 +40,6 @@ import CandidatePopupCard from '../components/ui/CandidatePopupCard';
 type PipelineDisplayCandidate = Candidate & { stage: CandidateStage };
 
 // --- Filter Types ---
-// ✅ UPDATED: Removed string-based StatusFilter, logic moved to boolean state object
 type StageFilter = 'all' | CandidateStage;
 
 // --- Helper for Sorting ---
@@ -46,6 +48,14 @@ const sortCandidatesAlpha = (a: Candidate | PipelineDisplayCandidate, b: Candida
   const nameB = (b.profile_name || b.person_name || '').toLowerCase();
   return nameA.localeCompare(nameB);
 };
+
+// --- MOCK TEAMMATES (Fallback Data) ---
+const MOCK_TEAMMATES: TeammateOption[] = [
+  { user_id: 'u1', name: 'Alice Johnson (Mock)' },
+  { user_id: 'u2', name: 'Bob Smith (Mock)' },
+  { user_id: 'u3', name: 'Charlie Davis (Mock)' },
+  { user_id: 'u4', name: 'Diana Evans (Mock)' },
+];
 
 // --- Row components ---
 
@@ -105,12 +115,14 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate; onNameClick: () => void
 // PipelineCandidateRow
 const PipelineCandidateRow: React.FC<{
   candidate: PipelineDisplayCandidate;
+  jds: JdSummary[];
+  teammates: TeammateOption[]; // ✅ Props include teammates
   onStageChange: (id: string, newStage: CandidateStage) => void;
   onFavoriteToggle: (profileIdOrRankId: string) => void;
   onNameClick: () => void;
   isSelected: boolean;
   onToggleSelection: (id: string) => void;
-}> = ({ candidate, onStageChange, onFavoriteToggle, onNameClick, isSelected, onToggleSelection }) => {
+}> = ({ candidate, jds, teammates, onStageChange, onFavoriteToggle, onNameClick, isSelected, onToggleSelection }) => {
   const avatarInitial = candidate.profile_name?.split(' ').map(n => n[0]).join('').toUpperCase() || '??';
   const [isRecommendOpen, setIsRecommendOpen] = useState(false);
   const [isCallOpen, setIsCallOpen] = useState(false);
@@ -205,8 +217,34 @@ const PipelineCandidateRow: React.FC<{
       <RecommendPopup
         isOpen={isRecommendOpen}
         onClose={() => setIsRecommendOpen(false)}
-        onSend={(type, selection) => {
-          console.log('Recommend:', type, selection);
+        jds={jds}
+        teammates={teammates} // ✅ Passed teammates list
+        onSend={async (type, selection) => {
+          if (type === 'role' && selection) {
+            try {
+              // candidateId, source, targetJdId
+              const cid = candidate.rank_id || candidate.profile_id;
+              if (cid) {
+                await recommendCandidate(cid, 'ranked_candidates', selection);
+                alert('Candidate recommended successfully!');
+              }
+            } catch (error) {
+              console.error('Failed to recommend:', error);
+              alert('Failed to recommend candidate.');
+            }
+          } else if (type === 'team' && selection) {
+             // ✅ Handle team recommendation with API Call
+             try {
+                const cid = candidate.rank_id || candidate.profile_id;
+                if(cid) {
+                    await recommendToTeammate(cid, selection);
+                    alert(`Recommendation successfully sent to teammate!`);
+                }
+             } catch(err) {
+                 console.error(err);
+                 alert('Failed to recommend to teammate.');
+             }
+          }
         }}
       />
       <CallSchedulePopup
@@ -231,8 +269,11 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [userJds, setUserJds] = useState<JdSummary[]>([]);
   const [selectedJdId, setSelectedJdId] = useState<string>('');
+  
+  // ✅ INITIALIZED WITH MOCKS (Guarantees data presence)
+  const [teammates, setTeammates] = useState<TeammateOption[]>(MOCK_TEAMMATES);
 
-  // ✅ UPDATED: Role Pipeline Filters (now supports multiple selections)
+  // Role Pipeline Filters
   const [rolePipelineFilters, setRolePipelineFilters] = useState<{
     favorite: boolean;
     contacted: boolean;
@@ -256,6 +297,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     contacted?: boolean;
     save_for_future?: boolean;
     recommended?: boolean;
+    recommended_to_me?: boolean; // ✅ Added type
   }>({});
   
   // All Candidates Search State
@@ -348,13 +390,29 @@ export const PipelinePage = ({ user }: { user: User }) => {
     return () => channel.close();
   }, [tabId, selectedCandidate]);
 
-  // Load JDs
+  // Load JDs and Teammates (Parallel Fetch with Fallback)
   useEffect(() => {
-    const loadJdsAndCandidates = async () => {
+    const loadInitialData = async () => {
       setIsLoading(true);
       try {
-        const jds = await fetchJdsForUser();
+        // Run both fetches. Handle errors in getTeammates silently so JDs still load.
+        const jdsPromise = fetchJdsForUser();
+        const teamPromise = getTeammates().catch(e => {
+            console.warn("Failed to fetch teammates, using mocks", e);
+            return [];
+        });
+
+        const [jds, fetchedTeammates] = await Promise.all([jdsPromise, teamPromise]);
+
         setUserJds(jds);
+
+        // ✅ IMPORTANT: Only overwrite mocks if we actually got real data back
+        if (fetchedTeammates && fetchedTeammates.length > 0) {
+            setTeammates(fetchedTeammates); 
+        } else {
+            // Keep the MOCK_TEAMMATES if API returns empty
+            console.log("No teammates returned from API, keeping mock data.");
+        }
 
         if (jds.length > 0) {
           const defaultJdId = jds[0].jd_id;
@@ -371,7 +429,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
         setIsLoading(false);
       }
     };
-    loadJdsAndCandidates();
+    loadInitialData();
   }, []);
 
   // JD selection change
@@ -436,7 +494,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
   const favoritedCount = useMemo(() => candidates.filter(c => c.favorite).length, [candidates]);
   const contactedCount = useMemo(() => candidates.filter(c => c.contacted).length, [candidates]);
 
-  // ✅ UPDATED: Filtered and Sorted Candidates with Multi-Select Logic
+  // Filtered and Sorted Candidates with Multi-Select Logic
   const filteredCandidates = useMemo(() => {
     let tempCandidates = [...candidates];
     
@@ -532,7 +590,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }`;
   };
 
-  // ✅ UPDATED: Handle Download Jd Pipeline to include all active filters AND search
+  // Handle Download Jd Pipeline to include all active filters AND search
   const handleDownloadJdPipeline = async () => {
     if (!selectedJdId) return;
     try {
@@ -540,7 +598,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
         stage: activeStageFilter,
         favorite: rolePipelineFilters.favorite,
         contacted: rolePipelineFilters.contacted,
-        search: rolePipelineSearch // Added search param
+        search: rolePipelineSearch
       });
     } catch (err) {
       console.error("Download failed", err);
@@ -562,7 +620,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   };
 
-  // ✅ DEBOUNCE EFFECT: Set debounced search after 500ms
+  // DEBOUNCE EFFECT: Set debounced search after 500ms
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(allCandidatesSearch);
@@ -570,7 +628,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     return () => clearTimeout(timer);
   }, [allCandidatesSearch]);
 
-  // ✅ RESET EFFECT: Reset list and page when filters or search change
+  // RESET EFFECT: Reset list and page when filters or search change
   useEffect(() => {
     if (activeTab === 'allCandidates') {
         setAllCandidatesList([]); // Clear current list to avoid mixing results
@@ -578,7 +636,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   }, [allCandidatesFilters, debouncedSearch, activeTab]);
 
-  // ✅ FETCH EFFECT: Triggered by Page Change (or reset above)
+  // FETCH EFFECT: Triggered by Page Change (or reset above)
   useEffect(() => {
     if (activeTab !== 'allCandidates') return;
 
@@ -590,7 +648,8 @@ export const PipelinePage = ({ user }: { user: User }) => {
           contacted: allCandidatesFilters.contacted,
           save_for_future: allCandidatesFilters.save_for_future,
           recommended: allCandidatesFilters.recommended,
-          search: debouncedSearch // ✅ Pass search term
+          recommended_to_me: allCandidatesFilters.recommended_to_me, // ✅ Filter
+          search: debouncedSearch
         });
 
         if (allCandidatesPage === 1) {
@@ -606,7 +665,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
       }
     };
     loadAllCandidates();
-  }, [activeTab, allCandidatesPage, allCandidatesFilters, debouncedSearch]); // Depend on debouncedSearch
+  }, [activeTab, allCandidatesPage, allCandidatesFilters, debouncedSearch]);
 
   const handleAllFilterChange = (filterKey: keyof typeof allCandidatesFilters, value: boolean | undefined) => {
     setAllCandidatesFilters(prev => {
@@ -615,7 +674,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
       else newFilters[filterKey] = value;
       return newFilters;
     });
-    // Reset handled by effect
   };
 
   const getCandidateId = (c: Candidate) => c.rank_id || c.profile_id || c.resume_id || '';
@@ -712,7 +770,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
 
           {activeTab === 'rolePipeline' ? (
             <>
-              {/* Role Pipeline Content (Unchanged) */}
+              {/* Role Pipeline Content */}
               <div className="mb-6 flex justify-between items-center gap-4">
                 <select
                   value={selectedJdId}
@@ -762,7 +820,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                 </div>
               </div>
 
-              {/* ✅ UPDATED: Filter Buttons Logic */}
               <div className="flex items-center gap-2 border-b border-slate-200 pb-3 mb-3 text-sm">
                 <button
                   className={getFilterButtonClass(!rolePipelineFilters.favorite && !rolePipelineFilters.contacted)}
@@ -841,6 +898,8 @@ export const PipelinePage = ({ user }: { user: User }) => {
                       <PipelineCandidateRow
                         key={candidate.rank_id}
                         candidate={candidate}
+                        jds={userJds}
+                        teammates={teammates} // ✅ Passed teammates prop
                         onStageChange={handleStageChange}
                         onFavoriteToggle={handleFavoriteToggle}
                         onNameClick={() => setSelectedCandidate(candidate)}
@@ -858,7 +917,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
                   <button className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50">Remove Selected</button>
                 </div>
                 
-                {/* Search More Candidates Button */}
                 <button 
                   onClick={handleSearchMore}
                   className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700"
@@ -873,7 +931,6 @@ export const PipelinePage = ({ user }: { user: User }) => {
               <div className="mb-4 flex justify-between items-center gap-4">
                  <div className="relative flex-grow">
                   <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  {/* ✅ UPDATED Search Input */}
                   <input
                     type="text"
                     value={allCandidatesSearch}
@@ -926,6 +983,14 @@ export const PipelinePage = ({ user }: { user: User }) => {
                   Saved for future
                 </button>
                 <button className="px-3 py-1.5 rounded-md text-slate-600 hover:bg-slate-100">Recommended to you</button>
+                
+                {/* ✅ UPDATED BUTTON: "Recommended to you" is now clickable */}
+                <button 
+                  className={getFilterButtonClass(!!allCandidatesFilters.recommended_to_me)}
+                  onClick={() => handleAllFilterChange('recommended_to_me', allCandidatesFilters.recommended_to_me ? undefined : true)}
+                >
+                  Recommended to you
+                </button>
                 
                 <button 
                   className={getFilterButtonClass(!!allCandidatesFilters.recommended)}

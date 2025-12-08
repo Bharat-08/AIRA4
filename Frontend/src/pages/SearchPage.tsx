@@ -13,13 +13,16 @@ import {
   XCircle,
   Download,
 } from 'lucide-react';
-// ✅ Updated: Import useLocation
 import { useLocation } from 'react-router-dom';
 import type { User } from '../types/user';
 import { uploadJdFile, uploadResumeFiles, uploadBulkJds } from '../api/upload';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
+// ✅ NEW: Import User API
+import { getTeammates } from '../api/users';
 import CandidatePopupCard from '../components/ui/CandidatePopupCard';
 import JdPopupCard from '../components/ui/JdPopupCard';
+// ✅ NEW: Import TeammateOption type for state
+import { type TeammateOption } from '../components/ui/RecommendPopup';
 
 import {
   startSearchAndRankTask,
@@ -37,8 +40,6 @@ import {
   fetchLinkedInCandidates,
   downloadSearchResults,
 } from '../api/search';
-
-// Removed: getRankedCandidatesForJd (no longer needed for expensive polling)
 
 import type { Candidate, LinkedInCandidate } from '../types/candidate';
 import { LinkedInCandidateRow } from '../components/ui/LinkedInCandidateRow';
@@ -82,7 +83,6 @@ type PersistedCandidates = {
 
 export function SearchPage({ user }: { user: User }) {
   const userName = user.name || 'User';
-  // ✅ NEW: Use Location
   const location = useLocation();
 
   const [userJds, setUserJds] = useState<JdSummary[]>([]);
@@ -96,6 +96,9 @@ export function SearchPage({ user }: { user: User }) {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
+
+  // ✅ NEW: State for teammates
+  const [teammates, setTeammates] = useState<TeammateOption[]>([]);
 
   // LinkedIn candidates state
   const [linkedInCandidates, setLinkedInCandidates] = useState<LinkedInCandidate[]>([]);
@@ -168,7 +171,7 @@ export function SearchPage({ user }: { user: User }) {
     }
   }, [candidates, currentJd, STORAGE_KEY]);
 
-  // Load JDs and restore persistence (Updated for query param support)
+  // Load JDs, Teammates and restore persistence
   useEffect(() => {
     let parsedStorage: PersistedCandidates | null = null;
     isRestoringRef.current = true;
@@ -187,10 +190,15 @@ export function SearchPage({ user }: { user: User }) {
 
     (async () => {
       try {
+        // ✅ FETCH TEAMMATES
+        getTeammates()
+          .then((data) => setTeammates(data))
+          .catch((err) => console.error("SearchPage: Failed to load teammates", err));
+
         const jds = await fetchJdsForUser();
         setUserJds(jds);
 
-        // ✅ 1. Check Query Param First (from Pipeline Page)
+        // 1. Check Query Param First (from Pipeline Page)
         const params = new URLSearchParams(location.search);
         const queryJdId = params.get('jd_id');
         
@@ -248,21 +256,18 @@ export function SearchPage({ user }: { user: User }) {
         isRestoringRef.current = false;
       }
     })();
-  }, [STORAGE_KEY, location.search]); // ✅ Added location.search dependency
+  }, [STORAGE_KEY, location.search]);
 
-  // 🔄 NEW: Efficient Sync via BroadcastChannel (Replaces expensive polling)
+  // Sync via BroadcastChannel
   useEffect(() => {
     const channel = new BroadcastChannel('candidate_sync_channel');
 
     channel.onmessage = (event) => {
-      // Ignore messages from self to prevent loops
       if (event.data?.sourceTabId === tabId) return;
 
       const { type, candidateId, value } = event.data;
 
-      // Helper to update a list of candidates
       const updateList = (list: any[]) => list.map(c => {
-        // Match logic based on your candidate types (profile_id, resume_id, etc.)
         const isMatch = (c.profile_id && c.profile_id === candidateId) || 
                         (c.resume_id && c.resume_id === candidateId) || 
                         (c.linkedin_profile_id && c.linkedin_profile_id === candidateId);
@@ -278,7 +283,6 @@ export function SearchPage({ user }: { user: User }) {
         setCandidates(prev => updateList(prev));
         setLinkedInCandidates(prev => updateList(prev));
         
-        // Also update selected candidate if open
         if (selectedCandidate) {
            const isMatch = (selectedCandidate.profile_id === candidateId) || 
                            ((selectedCandidate as any).resume_id === candidateId);
@@ -294,14 +298,12 @@ export function SearchPage({ user }: { user: User }) {
   }, [tabId, selectedCandidate]);
 
 
-  // Auto-select uploaded JD (Single & Bulk)
   const handleJdFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files && files.length > 0) {
-      
       if (files.length > MAX_FILES_LIMIT) {
         setUploadStatus({ message: `To ensure fast processing, please upload a maximum of ${MAX_FILES_LIMIT} files at a time.`, type: 'error' });
-        if (jdInputRef.current) jdInputRef.current.value = ''; // reset input
+        if (jdInputRef.current) jdInputRef.current.value = '';
         return;
       }
 
@@ -340,7 +342,7 @@ export function SearchPage({ user }: { user: User }) {
                     const newJds = updatedJds.filter(j => !existingIds.has(j.jd_id));
 
                     const isDone = updatedJds.length >= expectedCount;
-                    const isTimeout = attempts > 24; // ~2 minutes
+                    const isTimeout = attempts > 24;
 
                     if (isDone || (isTimeout && newJds.length > 0)) {
                         setUploadStatus({ 
@@ -514,14 +516,12 @@ export function SearchPage({ user }: { user: User }) {
     }
   };
 
-  // ✅ UPDATED: Handle Download with filtering
   const handleDownload = async (format: 'csv' | 'xlsx') => {
     if (!currentJd) {
         setUploadStatus({ message: 'Please select a Job Description first.', type: 'error' });
         return;
     }
     
-    // Only allow download if we have results (either regular candidates or linkedin candidates)
     if (!candidates.length && !linkedInCandidates.length) {
         setUploadStatus({ message: 'No candidates to download.', type: 'error' });
         return;
@@ -530,21 +530,10 @@ export function SearchPage({ user }: { user: User }) {
     try {
       setIsDownloading(true);
       
-      // 1. Filter Web Candidates (candidates with profile_id)
-      const profileIds = candidates
-        .filter(c => c.profile_id)
-        .map(c => c.profile_id!);
+      const profileIds = candidates.filter(c => c.profile_id).map(c => c.profile_id!);
+      const resumeIds = candidates.filter(c => (c as any).resume_id).map(c => (c as any).resume_id);
+      const linkedinIds = linkedInCandidates.map(l => l.linkedin_profile_id);
 
-      // 2. Filter Resume Candidates (candidates with resume_id)
-      const resumeIds = candidates
-        .filter(c => (c as any).resume_id)
-        .map(c => (c as any).resume_id);
-
-      // 3. Filter LinkedIn Candidates
-      const linkedinIds = linkedInCandidates
-        .map(l => l.linkedin_profile_id);
-
-      // Pass these lists to the API
       await downloadSearchResults(
           currentJd.jd_id, 
           format, 
@@ -882,7 +871,6 @@ export function SearchPage({ user }: { user: User }) {
     source: 'ranked_candidates' | 'ranked_candidates_from_resume' = 'ranked_candidates',
     newFavorite: boolean
   ) => {
-    // 1. Optimistic Update
     const updateList = (list: Candidate[]) => list.map((c) => {
         const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
         if (isMatch) {
@@ -900,7 +888,6 @@ export function SearchPage({ user }: { user: User }) {
       }
     }
 
-    // 2. Broadcast Update to other tabs (Pipeline Page)
     const channel = new BroadcastChannel('candidate_sync_channel');
     channel.postMessage({ 
         type: 'FAVORITE_UPDATED', 
@@ -910,11 +897,9 @@ export function SearchPage({ user }: { user: User }) {
     });
     channel.close();
 
-    // 3. API Call
     try {
       await toggleFavorite(candidateId, source, newFavorite);
     } catch {
-      // Revert if failed
       setCandidates((prev) => prev.map((c) => {
           const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
           if (isMatch) return { ...c, favorite: !newFavorite };
@@ -936,7 +921,6 @@ export function SearchPage({ user }: { user: User }) {
     const prevCandidates = candidates;
     const prevLinked = linkedInCandidates;
 
-    // 1. Optimistic Update
     setCandidates((prev) =>
       prev.map((c) => {
         const isMatch = c.profile_id === candidateId || (c as any).resume_id === candidateId || c.rank_id === candidateId;
@@ -963,7 +947,6 @@ export function SearchPage({ user }: { user: User }) {
       })
     );
 
-    // 2. Broadcast Update
     const channel = new BroadcastChannel('candidate_sync_channel');
     channel.postMessage({ 
         type: 'SAVE_UPDATED', 
@@ -973,7 +956,6 @@ export function SearchPage({ user }: { user: User }) {
     });
     channel.close();
 
-    // 3. API Call
     try {
       await toggleSave(candidateId, source, newSave);
     } catch {
@@ -993,7 +975,6 @@ export function SearchPage({ user }: { user: User }) {
       <main className="flex-grow p-4 sm:p-6 md:p-8 max-w-screen-2xl mx-auto w-full overflow-y-hidden min-h-0">
         <div className="grid grid-cols-12 gap-8 h-full">
           <aside className="col-span-3 flex flex-col gap-6 overflow-y-auto pb-4">
-            {/* JD Selection */}
             <div className="p-4 bg-white rounded-lg border border-gray-200 flex-shrink-0">
               <div className="flex justify-between items-center mb-2">
                 <label className="font-semibold text-gray-700">Select Role</label>
@@ -1055,7 +1036,6 @@ export function SearchPage({ user }: { user: User }) {
               </div>
             </div>
 
-            {/* Sourcing Options */}
             <div className="p-4 bg-white rounded-lg border border-gray-200 flex-shrink-0">
               <h3 className="font-semibold text-gray-700 mb-3">Sourcing Options</h3>
               <div className="space-y-2 text-sm">
@@ -1113,7 +1093,6 @@ export function SearchPage({ user }: { user: User }) {
                 </>
               )}
 
-              {/* Web Search modes */}
               {sourcingOption === 'web' && (
                 <div className="mt-4 p-3 bg-gray-50 rounded-md border border-gray-100 text-sm">
                   <div className="font-medium mb-2">Web Sourcing Mode</div>
@@ -1157,14 +1136,12 @@ export function SearchPage({ user }: { user: User }) {
             )}
           </aside>
 
-          {/* Main Content */}
           <div className="col-span-9 flex flex-col gap-8 h-full min-h-0">
             <div className="p-6 bg-white rounded-lg border border-gray-200 flex flex-col flex-grow min-h-0">
               <div className="flex-shrink-0">
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-lg font-semibold">Top Matching Candidates</h2>
                   <div className="flex gap-2">
-                     {/* Download Buttons */}
                      <button
                        onClick={() => handleDownload('csv')}
                        disabled={isDownloading || (!candidates.length && !linkedInCandidates.length)}
@@ -1191,7 +1168,6 @@ export function SearchPage({ user }: { user: User }) {
                 </div>
                 <p className="text-sm text-gray-500 mb-4 h-5">{!isRankingLoading && helperText}</p>
 
-                {/* Header row */}
                 {sourcingOption === 'gl' ? (
                   <div className="grid grid-cols-3 text-xs font-semibold text-gray-500 uppercase py-2 border-b-2">
                     <div className="flex items-center justify-start">Candidate</div>
@@ -1214,20 +1190,24 @@ export function SearchPage({ user }: { user: User }) {
                       <LinkedInCandidateRow
                         key={li.linkedin_profile_id}
                         candidate={li}
+                        // ✅ PASS JDs & TEAMMATES
+                        userJds={userJds}
+                        teammates={teammates}
                         onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
                           handleToggleFavorite(candidateId, (source as any) ?? 'ranked_candidates', fav ?? false)
                         }
                         onToggleSave={(candidateId: string, source?: any, save?: boolean) =>
                           handleToggleSave(candidateId, (source as any) ?? 'ranked_candidates', save ?? !li.save_for_future)
                         }
-                        // ✅ NEW: Pass user JDs
-                        userJds={userJds}
                       />
                     ))
                   : candidates.map((candidate) => (
                       <CandidateRow
                         key={stableKey(candidate)}
                         candidate={candidate}
+                        // ✅ PASS JDs & TEAMMATES
+                        userJds={userJds}
+                        teammates={teammates} 
                         onUpdateCandidate={handleUpdateCandidate}
                         onNameClick={handleCandidateNameClick}
                         onToggleFavorite={(candidateId: string, source?: any, fav?: boolean) =>
@@ -1245,8 +1225,6 @@ export function SearchPage({ user }: { user: User }) {
                           )
                         }
                         source={(candidate as any).resume_id ? 'ranked_candidates_from_resume' : 'ranked_candidates'}
-                        // ✅ NEW: Pass user JDs
-                        userJds={userJds}
                       />
                     ))}
               </div>

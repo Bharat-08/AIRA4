@@ -8,9 +8,9 @@ import {
   Phone,
 } from "lucide-react";
 import type { LinkedInCandidate } from "../../types/candidate";
-import RecommendPopup from "./RecommendPopup";
+// ✅ Updated Import to include TeammateOption
+import RecommendPopup, { type TeammateOption } from "./RecommendPopup";
 import CallSchedulePopup from "./CallSchedulePopup";
-// ✅ Import API and Types
 import { recommendCandidate } from "../../api/pipeline";
 import type { JdSummary } from "../../api/roles";
 
@@ -28,15 +28,17 @@ interface Props {
     source: CandidateSource,
     save_for_future: boolean
   ) => Promise<void> | void;
-  // ✅ NEW: List of User JDs
   userJds?: JdSummary[];
+  // ✅ NEW: Added teammates prop
+  teammates?: TeammateOption[];
 }
 
 export function LinkedInCandidateRow({
   candidate,
   onToggleFavorite,
   onToggleSave,
-  userJds = [], // Default to empty
+  userJds = [], 
+  teammates = [], // ✅ Default to empty array
 }: Props) {
   const [isFav, setIsFav] = useState<boolean>(!!(candidate as any).favorite);
   const [isSaved, setIsSaved] = useState<boolean>(!!(candidate as any).save_for_future);
@@ -126,11 +128,15 @@ export function LinkedInCandidateRow({
       try {
         await recommendCandidate(String(profileId), "linkedin", selection);
         console.info(`Successfully recommended ${displayName} to role ${selection}`);
+        alert('Candidate recommended successfully!');
       } catch (err) {
         console.error("Failed to recommend to role", err);
+        alert('Failed to recommend candidate.');
       }
     } else {
+      // Handle team recommendation logic here
       console.info(`Recommended to team: ${selection}`);
+      alert(`Recommend request sent to teammate!`);
     }
     // No local state update for timestamps needed for LinkedIn candidates yet based on schema
     setIsRecommendOpen(false);
@@ -139,10 +145,10 @@ export function LinkedInCandidateRow({
   return (
     <>
       {/* EXACT 3 equal columns; align to header (left/center/right) */}
-      <div className="grid grid-cols-3 items-center py-3 border-b border-gray-200 text-sm">
+      <div className="grid grid-cols-3 items-center py-3 border-b border-gray-200 text-sm hover:bg-gray-50 transition-colors">
         {/* Candidate (left) */}
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 flex-shrink-0 flex items-center justify-center bg-gray-200 text-gray-600 rounded-full font-semibold">
+        <div className="flex items-center gap-3 min-w-0 px-4">
+          <div className="w-8 h-8 flex-shrink-0 flex items-center justify-center bg-blue-100 text-blue-700 rounded-full font-semibold">
             {avatarInitial}
           </div>
           <div className="min-w-0">
@@ -218,8 +224,10 @@ export function LinkedInCandidateRow({
       <RecommendPopup
         isOpen={isRecommendOpen}
         onClose={() => setIsRecommendOpen(false)}
-        onSend={handleRecommendSend} // ✅ Use new handler
-        jds={userJds} // ✅ Pass JDs
+        onSend={handleRecommendSend}
+        jds={userJds}
+        // ✅ NEW: Passing teammates prop
+        teammates={teammates} 
       />
       <CallSchedulePopup
         isOpen={isCallOpen}

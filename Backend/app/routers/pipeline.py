@@ -1,4 +1,3 @@
-# backend/app/routers/pipeline.py
 import logging
 import csv
 import io
@@ -95,7 +94,13 @@ class PipelineCandidateResponse(BaseModel):
 class RecommendRequest(BaseModel):
     candidate_id: UUID4
     source: str  # 'ranked_candidates', 'ranked_candidates_from_resume', or 'linkedin'
-    target_jd_id: UUID4
+    target_jd_id: Optional[UUID4] = None  # Optional now
+    target_user_id: Optional[UUID4] = None  # Added for teammate recommendation
+
+
+class RecommendToUserRequest(BaseModel):
+    candidate_id: UUID4
+    target_user_id: UUID4
 
 
 class StageUpdateRequest(BaseModel):
@@ -120,10 +125,22 @@ async def recommend_candidate(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Recommends a candidate to another JD by creating a new entry
-    in the appropriate table linked to the target JD.
+    Recommends a candidate to another JD (Role) OR another User (Teammate).
+    If target_user_id is provided, it assigns to that user with NULL jd_id (Untagged).
+    If target_jd_id is provided, it assigns to the current user (or specific user logic if needed) for that JD.
     """
     try:
+        # Validate inputs
+        if not payload.target_jd_id and not payload.target_user_id:
+            raise HTTPException(status_code=400, detail="Must provide either target_jd_id or target_user_id")
+
+        # Determine target owner and JD
+        target_user_uuid = payload.target_user_id if payload.target_user_id else current_user.id
+
+        # If sending to a teammate (target_user_id exists), we set jd_id to None (Untagged).
+        # Otherwise, we use the provided target_jd_id.
+        target_jd_uuid = payload.target_jd_id if not payload.target_user_id else None
+
         if payload.source == "ranked_candidates":
             existing = (
                 db.query(RankedCandidate)
@@ -137,22 +154,25 @@ async def recommend_candidate(
             if not existing:
                 raise HTTPException(status_code=404, detail="Candidate not found")
 
-            # Check if already exists in target JD
-            duplicate = (
-                db.query(RankedCandidate)
-                .filter(
-                    RankedCandidate.jd_id == payload.target_jd_id,
-                    RankedCandidate.profile_id == existing.profile_id,
-                )
-                .first()
+            # Check duplication
+            query = db.query(RankedCandidate).filter(
+                RankedCandidate.user_id == target_user_uuid,
+                RankedCandidate.profile_id == existing.profile_id,
             )
+
+            if target_jd_uuid:
+                query = query.filter(RankedCandidate.jd_id == target_jd_uuid)
+            else:
+                query = query.filter(RankedCandidate.jd_id.is_(None))
+
+            duplicate = query.first()
 
             if duplicate:
                 return {"message": "Candidate already in target pipeline"}
 
             new_entry = RankedCandidate(
-                user_id=existing.user_id,
-                jd_id=payload.target_jd_id,
+                user_id=target_user_uuid,
+                jd_id=target_jd_uuid,
                 profile_id=existing.profile_id,
                 match_score=existing.match_score,
                 strengths=existing.strengths,
@@ -175,21 +195,24 @@ async def recommend_candidate(
             if not existing:
                 raise HTTPException(status_code=404, detail="Candidate not found")
 
-            duplicate = (
-                db.query(RankedCandidateFromResume)
-                .filter(
-                    RankedCandidateFromResume.jd_id == payload.target_jd_id,
-                    RankedCandidateFromResume.resume_id == existing.resume_id,
-                )
-                .first()
+            query = db.query(RankedCandidateFromResume).filter(
+                RankedCandidateFromResume.user_id == target_user_uuid,
+                RankedCandidateFromResume.resume_id == existing.resume_id,
             )
+
+            if target_jd_uuid:
+                query = query.filter(RankedCandidateFromResume.jd_id == target_jd_uuid)
+            else:
+                query = query.filter(RankedCandidateFromResume.jd_id.is_(None))
+
+            duplicate = query.first()
 
             if duplicate:
                 return {"message": "Candidate already in target pipeline"}
 
             new_entry = RankedCandidateFromResume(
-                user_id=existing.user_id,
-                jd_id=payload.target_jd_id,
+                user_id=target_user_uuid,
+                jd_id=target_jd_uuid,
                 resume_id=existing.resume_id,
                 match_score=existing.match_score,
                 strengths=existing.strengths,
@@ -212,10 +235,11 @@ async def recommend_candidate(
             if not existing:
                 raise HTTPException(status_code=404, detail="Candidate not found")
 
-            # For LinkedIn, create a new LinkedIn entry for the new JD
+            # (Optional) Duplicate check for LinkedIn could be added here.
+
             new_entry = LinkedIn(
-                user_id=existing.user_id,
-                jd_id=payload.target_jd_id,
+                user_id=target_user_uuid,
+                jd_id=target_jd_uuid,
                 name=existing.name,
                 profile_link=existing.profile_link,
                 position=existing.position,
@@ -239,12 +263,163 @@ async def recommend_candidate(
         raise HTTPException(status_code=500, detail="Failed to recommend candidate")
 
 
+@router.post("/recommend-to-user")
+async def recommend_candidate_to_user(
+    payload: RecommendToUserRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Recommend a candidate (from ranked_candidates, ranked_candidates_from_resume,
+    or linkedin) to a teammate (target_user_id).
+
+    - Finds the candidate by candidate_id scoped to current_user.
+    - Copies the record into the corresponding table for target_user_id.
+    - New record always has jd_id = None and is_recommended = True.
+    - If the target user already has this candidate (matching profile_id/resume_id or profile_link and jd_id IS NULL),
+      returns a success message without duplicating.
+    """
+    try:
+        target_user_id = payload.target_user_id
+
+        # 1) Try RankedCandidate
+        existing_ranked = (
+            db.query(RankedCandidate)
+            .filter(
+                RankedCandidate.rank_id == payload.candidate_id,
+                RankedCandidate.user_id == str(current_user.id),
+            )
+            .first()
+        )
+
+        if existing_ranked:
+            duplicate = (
+                db.query(RankedCandidate)
+                .filter(
+                    RankedCandidate.user_id == str(target_user_id),
+                    RankedCandidate.profile_id == existing_ranked.profile_id,
+                    RankedCandidate.jd_id.is_(None),
+                )
+                .first()
+            )
+
+            if duplicate:
+                return {
+                    "message": "Candidate already recommended to this user (ranked_candidates)."
+                }
+
+            new_entry = RankedCandidate(
+                user_id=str(target_user_id),
+                jd_id=None,
+                profile_id=existing_ranked.profile_id,
+                match_score=existing_ranked.match_score,
+                strengths=existing_ranked.strengths,
+                linkedin_url=existing_ranked.linkedin_url,
+                is_recommended=True,
+                stage="In Consideration",
+            )
+            db.add(new_entry)
+            db.commit()
+            return {"message": "Candidate recommended to user successfully (ranked_candidates)."}
+
+        # 2) Try RankedCandidateFromResume
+        existing_resume = (
+            db.query(RankedCandidateFromResume)
+            .filter(
+                RankedCandidateFromResume.rank_id == payload.candidate_id,
+                RankedCandidateFromResume.user_id == str(current_user.id),
+            )
+            .first()
+        )
+
+        if existing_resume:
+            duplicate = (
+                db.query(RankedCandidateFromResume)
+                .filter(
+                    RankedCandidateFromResume.user_id == str(target_user_id),
+                    RankedCandidateFromResume.resume_id == existing_resume.resume_id,
+                    RankedCandidateFromResume.jd_id.is_(None),
+                )
+                .first()
+            )
+
+            if duplicate:
+                return {
+                    "message": "Candidate already recommended to this user (ranked_candidates_from_resume)."
+                }
+
+            new_entry = RankedCandidateFromResume(
+                user_id=str(target_user_id),
+                jd_id=None,
+                resume_id=existing_resume.resume_id,
+                match_score=existing_resume.match_score,
+                strengths=existing_resume.strengths,
+                linkedin_url=existing_resume.linkedin_url,
+                is_recommended=True,
+                stage="In Consideration",
+            )
+            db.add(new_entry)
+            db.commit()
+            return {"message": "Candidate recommended to user successfully (ranked_candidates_from_resume)."}
+
+        # 3) Try LinkedIn
+        existing_linkedin = (
+            db.query(LinkedIn)
+            .filter(
+                LinkedIn.linkedin_profile_id == payload.candidate_id,
+                LinkedIn.user_id == str(current_user.id),
+            )
+            .first()
+        )
+
+        if existing_linkedin:
+            duplicate = (
+                db.query(LinkedIn)
+                .filter(
+                    LinkedIn.user_id == str(target_user_id),
+                    LinkedIn.profile_link == existing_linkedin.profile_link,
+                    LinkedIn.jd_id.is_(None),
+                )
+                .first()
+            )
+
+            if duplicate:
+                return {
+                    "message": "Candidate already recommended to this user (linkedin)."
+                }
+
+            new_entry = LinkedIn(
+                user_id=str(target_user_id),
+                jd_id=None,
+                name=existing_linkedin.name,
+                profile_link=existing_linkedin.profile_link,
+                position=existing_linkedin.position,
+                company=existing_linkedin.company,
+                summary=existing_linkedin.summary,
+                is_recommended=True,
+            )
+            db.add(new_entry)
+            db.commit()
+            return {"message": "Candidate recommended to user successfully (linkedin)."}
+
+        # If not found in any table
+        raise HTTPException(status_code=404, detail="Candidate not found for current user")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error recommending candidate to user: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to recommend candidate to user")
+
+
 @router.get("/all/download")
 async def download_all_candidates_csv(
     favorite: Optional[bool] = Query(None),
     contacted: Optional[bool] = Query(None),
     save_for_future: Optional[bool] = Query(None),
     recommended: Optional[bool] = Query(None),
+    recommended_to_me: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     supabase: Client = Depends(get_supabase_client),
@@ -281,6 +456,12 @@ async def download_all_candidates_csv(
                 RankedCandidateFromResume.is_recommended.is_(recommended)
             )
             filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
+
+        if recommended_to_me:
+            # Only candidates that were recommended to the current user
+            filters_ranked.append(RankedCandidate.is_recommended.is_(True))
+            filters_resume.append(RankedCandidateFromResume.is_recommended.is_(True))
+            filters_linkedin.append(LinkedIn.is_recommended.is_(True))
 
         # Search
         if search:
@@ -492,6 +673,7 @@ async def get_all_ranked_candidates(
     contacted: Optional[bool] = Query(None),
     save_for_future: Optional[bool] = Query(None),
     recommended: Optional[bool] = Query(None),
+    recommended_to_me: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     supabase: Client = Depends(get_supabase_client),
@@ -528,6 +710,12 @@ async def get_all_ranked_candidates(
                 RankedCandidateFromResume.is_recommended.is_(recommended)
             )
             filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
+
+        if recommended_to_me:
+            # Only candidates that were recommended to the current user
+            filters_ranked.append(RankedCandidate.is_recommended.is_(True))
+            filters_resume.append(RankedCandidateFromResume.is_recommended.is_(True))
+            filters_linkedin.append(LinkedIn.is_recommended.is_(True))
 
         # Search
         if search:

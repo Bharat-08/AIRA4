@@ -25,8 +25,9 @@ class RankedCandidate(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
     )
-    jd_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("jds.jd_id", ondelete="CASCADE")
+    # ✅ UPDATED: jd_id is now nullable to support "Untagged" recommendations to teammates
+    jd_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jds.jd_id", ondelete="CASCADE"), nullable=True
     )
     profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     rank: Mapped[int] = mapped_column(Integer, nullable=True)
@@ -67,8 +68,9 @@ class RankedCandidateFromResume(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
     )
-    jd_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("jds.jd_id", ondelete="CASCADE")
+    # ✅ UPDATED: jd_id is now nullable
+    jd_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jds.jd_id", ondelete="CASCADE"), nullable=True
     )
     resume_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     rank: Mapped[int] = mapped_column(Integer, nullable=True)
