@@ -15,7 +15,8 @@ import {
   downloadJdPipeline,
   downloadAllCandidates,
   recommendCandidate,
-  recommendToTeammate, // ✅ Added import
+  recommendToTeammate,
+  deleteCandidates, // ✅ Added import
 } from '../api/pipeline';
 import { fetchJdsForUser, type JdSummary } from '../api/roles';
 import { getTeammates } from '../api/users'; 
@@ -60,7 +61,11 @@ const MOCK_TEAMMATES: TeammateOption[] = [
 // --- Row components ---
 
 // AllCandidatesRow
-const AllCandidatesRow: React.FC<{ candidate: Candidate; onNameClick: () => void }> = ({ candidate, onNameClick }) => {
+const AllCandidatesRow: React.FC<{ 
+  candidate: Candidate; 
+  onNameClick: () => void;
+  onDelete: (candidate: Candidate) => void; // ✅ Added Prop
+}> = ({ candidate, onNameClick, onDelete }) => {
   const avatarInitial =
     (candidate.profile_name || candidate.person_name || '')
       .split(' ')
@@ -78,7 +83,8 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate; onNameClick: () => void
   return (
     <div className="grid grid-cols-12 items-center py-3 px-2 border-b border-slate-100 text-sm hover:bg-slate-50">
       <div className="col-span-1 flex justify-center">
-        <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" />
+        {/* Placeholder checkbox for consistency, not wired in All Candidates yet per requirement */}
+        <input type="checkbox" className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500" disabled />
       </div>
       <div className="col-span-4 flex items-center gap-3">
         {/* Clickable Avatar */}
@@ -104,7 +110,13 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate; onNameClick: () => void
         </a>
       </div>
       <div className="col-span-2 flex items-center gap-4 text-slate-400">
-        <button className="hover:text-red-500"><Trash2 size={18} /></button>
+        <button 
+          className="hover:text-red-500"
+          onClick={(e) => { e.stopPropagation(); onDelete(candidate); }} // ✅ Functional Delete
+          title="Delete Candidate"
+        >
+          <Trash2 size={18} />
+        </button>
         <button className="hover:text-blue-500"><Send size={18} /></button>
         <button className="hover:text-green-500"><ArrowRight size={18} /></button>
       </div>
@@ -116,13 +128,14 @@ const AllCandidatesRow: React.FC<{ candidate: Candidate; onNameClick: () => void
 const PipelineCandidateRow: React.FC<{
   candidate: PipelineDisplayCandidate;
   jds: JdSummary[];
-  teammates: TeammateOption[]; // ✅ Props include teammates
+  teammates: TeammateOption[]; 
   onStageChange: (id: string, newStage: CandidateStage) => void;
   onFavoriteToggle: (profileIdOrRankId: string) => void;
   onNameClick: () => void;
   isSelected: boolean;
   onToggleSelection: (id: string) => void;
-}> = ({ candidate, jds, teammates, onStageChange, onFavoriteToggle, onNameClick, isSelected, onToggleSelection }) => {
+  onDelete: (candidate: Candidate) => void; // ✅ Added Prop
+}> = ({ candidate, jds, teammates, onStageChange, onFavoriteToggle, onNameClick, isSelected, onToggleSelection, onDelete }) => {
   const avatarInitial = candidate.profile_name?.split(' ').map(n => n[0]).join('').toUpperCase() || '??';
   const [isRecommendOpen, setIsRecommendOpen] = useState(false);
   const [isCallOpen, setIsCallOpen] = useState(false);
@@ -210,7 +223,13 @@ const PipelineCandidateRow: React.FC<{
             <Phone size={18} />
           </button>
 
-          <button className="hover:text-red-500"><Trash2 size={18} /></button>
+          <button 
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(candidate); }} // ✅ Functional Delete
+            className="hover:text-red-500"
+            title="Delete Candidate"
+          >
+            <Trash2 size={18} />
+          </button>
         </div>
       </div>
 
@@ -572,6 +591,78 @@ export const PipelinePage = ({ user }: { user: User }) => {
     }
   };
 
+  // ✅ DELETE FUNCTIONALITY (Single)
+  const handleDeleteCandidate = async (candidate: Candidate) => {
+    const id = candidate.rank_id || candidate.profile_id;
+    if (!id) return;
+    
+    if (!window.confirm(`Are you sure you want to remove ${candidate.profile_name || 'this candidate'}?`)) {
+        return;
+    }
+
+    try {
+      // @ts-ignore: source might not be strictly typed on Candidate yet but exists in API response
+      const source = candidate.source || 'ranked_candidates';
+      
+      await deleteCandidates([{ id, source }]);
+      
+      // Update State
+      setCandidates(prev => prev.filter(c => c.rank_id !== id));
+      setAllCandidatesList(prev => prev.filter(c => c.rank_id !== id));
+      
+      if (selectedIds.has(id)) {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+        });
+      }
+
+      if (selectedCandidate?.rank_id === id) {
+        setSelectedCandidate(null);
+      }
+
+    } catch (err) {
+      console.error("Failed to delete candidate:", err);
+      alert("Failed to delete candidate.");
+    }
+  };
+
+  // ✅ DELETE FUNCTIONALITY (Batch / Selected)
+  const handleRemoveSelected = async () => {
+    if (selectedIds.size === 0) return;
+
+    if (!window.confirm(`Are you sure you want to delete ${selectedIds.size} candidates?`)) {
+      return;
+    }
+
+    setIsProcessingAction(true);
+    try {
+      // Identify candidates from the current list that are selected
+      const activeList = activeTab === 'rolePipeline' ? candidates : allCandidatesList;
+      const selectedCandidates = activeList.filter(c => c.rank_id && selectedIds.has(c.rank_id));
+      
+      const payload = selectedCandidates.map(c => ({
+        id: c.rank_id!,
+        // @ts-ignore
+        source: c.source || 'ranked_candidates'
+      }));
+
+      await deleteCandidates(payload);
+
+      // Update State
+      setCandidates(prev => prev.filter(c => !selectedIds.has(c.rank_id!)));
+      setAllCandidatesList(prev => prev.filter(c => !selectedIds.has(c.rank_id!)));
+      setSelectedIds(new Set());
+
+    } catch (err) {
+      console.error("Failed to delete selected candidates:", err);
+      alert("Failed to delete selected candidates.");
+    } finally {
+      setIsProcessingAction(false);
+    }
+  };
+
   const handleSearchMore = () => {
     if (selectedJdId) {
       window.open(`/search?jd_id=${selectedJdId}`, '_blank');
@@ -764,8 +855,18 @@ export const PipelinePage = ({ user }: { user: User }) => {
         <h1 className="text-3xl font-bold text-slate-800 mb-6">Candidate Pipeline</h1>
         <div className="bg-white p-6 border border-slate-200 rounded-lg shadow-sm">
           <div className="flex border-b border-slate-200 mb-6">
-            <button onClick={() => setActiveTab('rolePipeline')} className={`px-1 pb-3 text-sm font-semibold ${activeTab === 'rolePipeline' ? 'text-teal-600 border-b-2 border-teal-600' : 'text-slate-500 hover:text-slate-800'}`}>Role Pipeline</button>
-            <button onClick={() => { setActiveTab('allCandidates'); setAllCandidatesPage(1); }} className={`ml-6 px-1 pb-3 text-sm font-semibold ${activeTab === 'allCandidates' ? 'text-teal-600 border-b-2 border-teal-600' : 'text-slate-500 hover:text-slate-800'}`}>All Candidates</button>
+            <button 
+                onClick={() => { setActiveTab('rolePipeline'); setSelectedIds(new Set()); }} 
+                className={`px-1 pb-3 text-sm font-semibold ${activeTab === 'rolePipeline' ? 'text-teal-600 border-b-2 border-teal-600' : 'text-slate-500 hover:text-slate-800'}`}
+            >
+                Role Pipeline
+            </button>
+            <button 
+                onClick={() => { setActiveTab('allCandidates'); setAllCandidatesPage(1); setSelectedIds(new Set()); }} 
+                className={`ml-6 px-1 pb-3 text-sm font-semibold ${activeTab === 'allCandidates' ? 'text-teal-600 border-b-2 border-teal-600' : 'text-slate-500 hover:text-slate-800'}`}
+            >
+                All Candidates
+            </button>
           </div>
 
           {activeTab === 'rolePipeline' ? (
@@ -905,6 +1006,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
                         onNameClick={() => setSelectedCandidate(candidate)}
                         isSelected={candidate.rank_id ? selectedIds.has(candidate.rank_id) : false}
                         onToggleSelection={handleSelectOne}
+                        onDelete={handleDeleteCandidate} // ✅ Added Prop
                       />
                     ))
                   )}
@@ -914,7 +1016,18 @@ export const PipelinePage = ({ user }: { user: User }) => {
               <div className="mt-6 flex items-center justify-between">
                 <div className="flex gap-2">
                   <button className="px-4 py-2 bg-teal-600 text-white font-semibold rounded-md text-sm hover:bg-teal-700">Contact Selected</button>
-                  <button className="px-4 py-2 bg-white border border-slate-300 font-semibold rounded-md text-sm text-slate-700 hover:bg-slate-50">Remove Selected</button>
+                  {/* ✅ Updated "Remove Selected" Button */}
+                  <button 
+                    onClick={handleRemoveSelected} 
+                    disabled={selectedIds.size === 0 || isProcessingAction}
+                    className={`px-4 py-2 border font-semibold rounded-md text-sm transition-colors ${
+                      selectedIds.size === 0 
+                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' 
+                        : 'bg-white border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300'
+                    }`}
+                  >
+                    {isProcessingAction ? 'Removing...' : 'Remove Selected'}
+                  </button>
                 </div>
                 
                 <button 
@@ -1020,6 +1133,7 @@ export const PipelinePage = ({ user }: { user: User }) => {
                           key={candidate.rank_id} 
                           candidate={candidate} 
                           onNameClick={() => setSelectedCandidate(candidate)}
+                          onDelete={handleDeleteCandidate} // ✅ Added Prop
                         />
                       ))}
                       {/* Infinite Scroll Sentinel */}

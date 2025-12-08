@@ -292,3 +292,23 @@ export const downloadAllCandidates = async (
   a.remove();
   window.URL.revokeObjectURL(url);
 };
+
+/**
+ * Deletes a list of candidates from the pipeline.
+ * @param candidates List of objects containing candidate ID and source.
+ */
+export const deleteCandidates = async (candidates: { id: string; source: string }[]): Promise<void> => {
+  const res = await fetch(`/api/pipeline/delete`, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(candidates),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to delete candidates (${res.status})`);
+  }
+};

@@ -107,6 +107,11 @@ class StageUpdateRequest(BaseModel):
     stage: str
 
 
+class DeleteCandidateSchema(BaseModel):
+    id: UUID4
+    source: str
+
+
 router = APIRouter(
     prefix="/pipeline",
     tags=["Pipeline"],
@@ -411,6 +416,50 @@ async def recommend_candidate_to_user(
         logger.exception(f"Error recommending candidate to user: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to recommend candidate to user")
+
+
+@router.delete("/delete")
+async def delete_candidates(
+    payload: List[DeleteCandidateSchema],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Deletes candidates from the pipeline.
+    Accepts a list of objects with 'id' and 'source'.
+    """
+    try:
+        if not payload:
+             return {"message": "No candidates provided"}
+
+        ids_ranked = [str(item.id) for item in payload if item.source == "ranked_candidates"]
+        ids_resume = [str(item.id) for item in payload if item.source == "ranked_candidates_from_resume"]
+        ids_linkedin = [str(item.id) for item in payload if item.source == "linkedin"]
+
+        if ids_ranked:
+            db.query(RankedCandidate).filter(
+                RankedCandidate.rank_id.in_(ids_ranked),
+                RankedCandidate.user_id == str(current_user.id)
+            ).delete(synchronize_session=False)
+
+        if ids_resume:
+            db.query(RankedCandidateFromResume).filter(
+                RankedCandidateFromResume.rank_id.in_(ids_resume),
+                RankedCandidateFromResume.user_id == str(current_user.id)
+            ).delete(synchronize_session=False)
+
+        if ids_linkedin:
+            db.query(LinkedIn).filter(
+                LinkedIn.linkedin_profile_id.in_(ids_linkedin),
+                LinkedIn.user_id == str(current_user.id)
+            ).delete(synchronize_session=False)
+
+        db.commit()
+        return {"message": "Candidates deleted successfully"}
+    except Exception as e:
+        logger.exception(f"Error deleting candidates: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete candidates")
 
 
 @router.get("/all/download")
