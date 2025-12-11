@@ -1,3 +1,4 @@
+# Backend/app/routers/pipeline.py
 import logging
 import csv
 import io
@@ -182,8 +183,10 @@ async def recommend_candidate(
                 match_score=existing.match_score,
                 strengths=existing.strengths,
                 linkedin_url=existing.linkedin_url,
-                is_recommended=True,
+                # ✅ UPDATED: If sending to teammate, set is_recommended=False to avoid clash
+                is_recommended=True if target_jd_uuid else False,
                 stage="In Consideration",
+                recommended_by=current_user.id
             )
             db.add(new_entry)
 
@@ -222,8 +225,10 @@ async def recommend_candidate(
                 match_score=existing.match_score,
                 strengths=existing.strengths,
                 linkedin_url=existing.linkedin_url,
-                is_recommended=True,
+                # ✅ UPDATED: False for teammate
+                is_recommended=True if target_jd_uuid else False,
                 stage="In Consideration",
+                recommended_by=current_user.id
             )
             db.add(new_entry)
 
@@ -240,8 +245,6 @@ async def recommend_candidate(
             if not existing:
                 raise HTTPException(status_code=404, detail="Candidate not found")
 
-            # (Optional) Duplicate check for LinkedIn could be added here.
-
             new_entry = LinkedIn(
                 user_id=target_user_uuid,
                 jd_id=target_jd_uuid,
@@ -250,7 +253,9 @@ async def recommend_candidate(
                 position=existing.position,
                 company=existing.company,
                 summary=existing.summary,
-                is_recommended=True,
+                # ✅ UPDATED: False for teammate
+                is_recommended=True if target_jd_uuid else False,
+                recommended_by=current_user.id
             )
             db.add(new_entry)
 
@@ -275,14 +280,7 @@ async def recommend_candidate_to_user(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Recommend a candidate (from ranked_candidates, ranked_candidates_from_resume,
-    or linkedin) to a teammate (target_user_id).
-
-    - Finds the candidate by candidate_id scoped to current_user.
-    - Copies the record into the corresponding table for target_user_id.
-    - New record always has jd_id = None and is_recommended = True.
-    - If the target user already has this candidate (matching profile_id/resume_id or profile_link and jd_id IS NULL),
-      returns a success message without duplicating.
+    Recommend a candidate to a teammate (target_user_id).
     """
     try:
         target_user_id = payload.target_user_id
@@ -320,8 +318,10 @@ async def recommend_candidate_to_user(
                 match_score=existing_ranked.match_score,
                 strengths=existing_ranked.strengths,
                 linkedin_url=existing_ranked.linkedin_url,
-                is_recommended=True,
+                # ✅ FIXED: Explicitly set False to prevent clash with 'Recommend to Role'
+                is_recommended=False, 
                 stage="In Consideration",
+                recommended_by=current_user.id
             )
             db.add(new_entry)
             db.commit()
@@ -360,8 +360,10 @@ async def recommend_candidate_to_user(
                 match_score=existing_resume.match_score,
                 strengths=existing_resume.strengths,
                 linkedin_url=existing_resume.linkedin_url,
-                is_recommended=True,
+                # ✅ FIXED: Explicitly set False
+                is_recommended=False,
                 stage="In Consideration",
+                recommended_by=current_user.id
             )
             db.add(new_entry)
             db.commit()
@@ -401,7 +403,9 @@ async def recommend_candidate_to_user(
                 position=existing_linkedin.position,
                 company=existing_linkedin.company,
                 summary=existing_linkedin.summary,
-                is_recommended=True,
+                # ✅ FIXED: Explicitly set False
+                is_recommended=False,
+                recommended_by=current_user.id
             )
             db.add(new_entry)
             db.commit()
@@ -507,10 +511,15 @@ async def download_all_candidates_csv(
             filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
 
         if recommended_to_me:
-            # Only candidates that were recommended to the current user
-            filters_ranked.append(RankedCandidate.is_recommended.is_(True))
-            filters_resume.append(RankedCandidateFromResume.is_recommended.is_(True))
-            filters_linkedin.append(LinkedIn.is_recommended.is_(True))
+            # ✅ FIX: Rely ONLY on recommended_by, ignoring is_recommended flag
+            filters_ranked.append(RankedCandidate.recommended_by.isnot(None))
+            filters_ranked.append(RankedCandidate.recommended_by != current_user.id)
+            
+            filters_resume.append(RankedCandidateFromResume.recommended_by.isnot(None))
+            filters_resume.append(RankedCandidateFromResume.recommended_by != current_user.id)
+            
+            filters_linkedin.append(LinkedIn.recommended_by.isnot(None))
+            filters_linkedin.append(LinkedIn.recommended_by != current_user.id)
 
         # Search
         if search:
@@ -761,10 +770,15 @@ async def get_all_ranked_candidates(
             filters_linkedin.append(LinkedIn.is_recommended.is_(recommended))
 
         if recommended_to_me:
-            # Only candidates that were recommended to the current user
-            filters_ranked.append(RankedCandidate.is_recommended.is_(True))
-            filters_resume.append(RankedCandidateFromResume.is_recommended.is_(True))
-            filters_linkedin.append(LinkedIn.is_recommended.is_(True))
+            # ✅ FIX: Rely ONLY on recommended_by, ignoring is_recommended flag
+            filters_ranked.append(RankedCandidate.recommended_by.isnot(None))
+            filters_ranked.append(RankedCandidate.recommended_by != current_user.id)
+
+            filters_resume.append(RankedCandidateFromResume.recommended_by.isnot(None))
+            filters_resume.append(RankedCandidateFromResume.recommended_by != current_user.id)
+
+            filters_linkedin.append(LinkedIn.recommended_by.isnot(None))
+            filters_linkedin.append(LinkedIn.recommended_by != current_user.id)
 
         # Search
         if search:

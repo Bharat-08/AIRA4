@@ -1,3 +1,4 @@
+# Backend/app/routers/dashboard.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -22,6 +23,7 @@ def get_dashboard_stats(
     - Open Roles: Count of JDs with status 'Open' (case-insensitive)
     - Contacted Candidates: Count of RankedCandidates with contacted=True
     - Favorited Candidates: Count of RankedCandidates with favorite=True
+    - Recommendations Received: Count of candidates recommended by others
     """
     try:
         user = ctx["user"]
@@ -46,10 +48,20 @@ def get_dashboard_stats(
             RankedCandidate.favorite == True
         ).count()
 
+        # 4. Count Recommendations Received
+        # Logic: Check if recommended_by exists and is NOT the current user
+        # We ignore is_recommended flag because we set it to False for teammate recommendations now.
+        recommendations_received_count = db.query(RankedCandidate).filter(
+            RankedCandidate.user_id == user_id,
+            RankedCandidate.recommended_by != None,
+            RankedCandidate.recommended_by != user_id
+        ).count()
+
         return {
             "open_roles": open_roles_count,
             "contacted_candidates": contacted_candidates_count,
-            "favorited_candidates": favorited_candidates_count
+            "favorited_candidates": favorited_candidates_count,
+            "recommendations_received": recommendations_received_count
         }
 
     except Exception as e:

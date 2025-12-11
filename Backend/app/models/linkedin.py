@@ -6,7 +6,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UUID,
-    Boolean,  # <-- Import this
+    Boolean,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -57,8 +57,15 @@ class LinkedIn(Base):
     is_recommended: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+
+    # ✅ NEW: Track WHO recommended the candidate
+    recommended_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
     # ---------------------------
 
     # Relationships (optional convenience)
     user = relationship("User", foreign_keys=[user_id])
     jd = relationship("JD", foreign_keys=[jd_id])
+    # ✅ NEW: Relationship to access the recommender's details
+    recommender = relationship("User", foreign_keys=[recommended_by])

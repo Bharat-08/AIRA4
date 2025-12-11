@@ -51,12 +51,19 @@ class RankedCandidate(Base):
     
     # ✅ NEW: Recommended to Role Flag
     is_recommended: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
+
+    # ✅ NEW: Track WHO recommended the candidate
+    recommended_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
     # --- END NEW COLUMNS ---
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id])
     recruiter = relationship("User", foreign_keys=[send_to_recruiter])
     jd = relationship("JD")
+    # Relationship to access the recommender's details (e.g. name)
+    recommender = relationship("User", foreign_keys=[recommended_by])
 
 
 class RankedCandidateFromResume(Base):
@@ -94,9 +101,16 @@ class RankedCandidateFromResume(Base):
 
     # ✅ NEW: Recommended to Role Flag
     is_recommended: Mapped[bool] = mapped_column(Boolean, server_default=expression.false(), nullable=False)
+
+    # ✅ NEW: Track WHO recommended the candidate
+    recommended_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
     # --- END NEW COLUMNS ---
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id])
     recruiter = relationship("User", foreign_keys=[send_to_recruiter])
     jd = relationship("JD")
+    # Relationship to access the recommender's details
+    recommender = relationship("User", foreign_keys=[recommended_by])

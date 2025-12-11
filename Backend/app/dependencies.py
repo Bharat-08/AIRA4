@@ -9,10 +9,9 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .supabase import supabase_client
 from .models.user import User
-# --- MODIFICATION: Import SessionLocal to create DB sessions ---
 from .db.session import SessionLocal
 
-# --- NEW FUNCTION: The missing get_db dependency ---
+# Dependency to get a SQLAlchemy database session
 def get_db():
     """Dependency to get a SQLAlchemy database session."""
     db = SessionLocal()
@@ -20,15 +19,15 @@ def get_db():
         yield db
     finally:
         db.close()
-# ----------------------------------------------------
 
 def get_supabase_client() -> Client:
     """Dependency to get the Supabase client instance."""
     return supabase_client
 
-async def get_current_user(
+# ✅ FIXED: Changed 'async def' to 'def' to handle Sync DB Session correctly
+def get_current_user(
     request: Request, 
-    db: Session = Depends(get_db) # MODIFIED: Use the new get_db dependency
+    db: Session = Depends(get_db)
 ) -> User:
     """
     Dependency to get the current user.
@@ -63,7 +62,7 @@ async def get_current_user(
         # This will catch any error during decoding (e.g., invalid signature, expired token)
         raise credentials_exception
 
-    # --- MODIFICATION: Fetch user from PostgreSQL via SQLAlchemy session ---
+    # Fetch user from PostgreSQL via SQLAlchemy session
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
